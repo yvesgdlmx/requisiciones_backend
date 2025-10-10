@@ -18,7 +18,7 @@ try {
     db.sync()
     console.log('Conexion correcta a la base de datos')
 } catch (error) {
-    console-log(error);
+    console.log(error);
 }
 
 // --- después de dotenv.config() ---
