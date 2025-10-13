@@ -90,8 +90,8 @@ const Requisicion = db.define(
     },
     tipoCompra: {
       type: DataTypes.ENUM("nacional", "internacional"),
-      allowNull: false,
-      defaultValue: "nacional"
+      allowNull: true,
+      defaultValue: null
     },
     abierto: {
       type: DataTypes.BOOLEAN,

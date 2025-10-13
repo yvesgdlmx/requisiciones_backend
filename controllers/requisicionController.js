@@ -385,7 +385,12 @@ export const actualizarRequisicionAdmin = async (req, res) => {
       requisicion.proveedor = proveedor;
     }
     if (tipoCompra !== undefined) {
-      requisicion.tipoCompra = tipoCompra;
+      // Si viene vacío o como string "null", guarda null real en la BD
+      if (tipoCompra === "" || tipoCompra === "null") {
+        requisicion.tipoCompra = null;
+      } else {
+        requisicion.tipoCompra = tipoCompra;
+      }
     }
     // Si se suben nuevos archivos mediante req.files, se agregan a los existentes
     if (req.files && req.files.length > 0) {
