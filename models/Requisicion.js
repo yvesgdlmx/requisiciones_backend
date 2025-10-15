@@ -112,6 +112,11 @@ const Requisicion = db.define(
       type: DataTypes.BOOLEAN,
       allowNull: false,
       defaultValue: false
+    },
+    fechaCambioStatus: {
+      type: DataTypes.DATE,
+      allowNull: false,
+      defaultValue: DataTypes.NOW
     }
   },
   {

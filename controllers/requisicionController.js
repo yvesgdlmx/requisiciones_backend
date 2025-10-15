@@ -369,6 +369,7 @@ export const actualizarRequisicionAdmin = async (req, res) => {
       requisicion.status = status;
       // Registra el admin que realizó el cambio
       requisicion.comprador = `${usuario.nombre} ${usuario.apellido}`;
+      requisicion.fechaCambioStatus = new Date();
     }
     if (prioridad !== undefined) {
       requisicion.prioridad = prioridad;
@@ -453,6 +454,7 @@ export const actualizarRequisicionSuperAdmin = async (req, res) => {
     
     if (status !== undefined) {
       requisicion.status = status;
+      requisicion.fechaCambioStatus = new Date();
     }
     
     // NUEVO: Actualizar comentario del autorizador
