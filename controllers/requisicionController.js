@@ -360,7 +360,7 @@ export const actualizarRequisicionAdmin = async (req, res) => {
     if (!requisicion) {
       return res.status(404).json({ msg: "Requisición no encontrada" });
     }
-    const { status, prioridad, comentario, numeroOrdenCompra, proveedor, tipoCompra } = req.body;
+    const { status, prioridad, comentario, numeroOrdenCompra, proveedor, tipoCompra, monto, eta } = req.body;
     // Si se intenta actualizar el status y el rol es superadmin, se rechaza la acción
     if (status !== undefined && usuario.rol === "superadmin") {
       return res.status(403).json({ msg: "No tienes los permisos para actualizar una requisición" });
@@ -390,6 +390,18 @@ export const actualizarRequisicionAdmin = async (req, res) => {
         requisicion.tipoCompra = null;
       } else {
         requisicion.tipoCompra = tipoCompra;
+      }
+    }
+    // NUEVOS CAMPOS: Actualizar monto y ETA
+    if (monto !== undefined) {
+      requisicion.monto = monto;
+    }
+    if (eta !== undefined) {
+      // Si viene vacío, guarda null; si no, convierte a fecha
+      if (eta === "" || eta === "null") {
+        requisicion.eta = null;
+      } else {
+        requisicion.eta = new Date(eta);
       }
     }
     // Si se suben nuevos archivos mediante req.files, se agregan a los existentes
@@ -435,12 +447,21 @@ export const actualizarRequisicionSuperAdmin = async (req, res) => {
     if (!requisicion) {
       return res.status(404).json({ msg: "Requisición no encontrada" });
     }
-    // Actualizar solo el status
-    const { status } = req.body;
+    
+    // Actualizar status y comentario del autorizador
+    const { status, comentarioAutorizador } = req.body;
+    
     if (status !== undefined) {
       requisicion.status = status;
-      await requisicion.save();
     }
+    
+    // NUEVO: Actualizar comentario del autorizador
+    if (comentarioAutorizador !== undefined) {
+      requisicion.comentarioAutorizador = comentarioAutorizador;
+    }
+    
+    await requisicion.save();
+    
     // Obtener la requisición actualizada con sus relaciones
     requisicion = await Requisicion.findByPk(id, {
       include: [

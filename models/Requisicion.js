@@ -78,7 +78,7 @@ const Requisicion = db.define(
       allowNull: true,
       defaultValue: null
     },
-     numeroOrdenCompra: {
+    numeroOrdenCompra: {
       type: DataTypes.STRING,
       allowNull: true,
       defaultValue: null
@@ -90,6 +90,21 @@ const Requisicion = db.define(
     },
     tipoCompra: {
       type: DataTypes.ENUM("nacional", "internacional"),
+      allowNull: true,
+      defaultValue: null
+    },
+    monto: {
+      type: DataTypes.STRING,
+      allowNull: true,
+      defaultValue: null
+    },
+    comentarioAutorizador: {
+      type: DataTypes.TEXT,
+      allowNull: true,
+      defaultValue: null
+    },
+    eta: {
+      type: DataTypes.DATE,
       allowNull: true,
       defaultValue: null
     },
