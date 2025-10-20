@@ -4,7 +4,8 @@ const Usuario = db.define("usuarios", {
   id: {
     type: DataTypes.INTEGER,
     primaryKey: true,
-    autoIncrement: true
+    autoIncrement: true,
+    allowNull: false
   },
   nombre: {
     type: DataTypes.STRING,

@@ -11,15 +11,31 @@ const __dirname = path.dirname(__filename);
 // Crea un nuevo usuario
 export const nuevoUsuario = async (req, res) => {
   try {
-    const usuario = Usuario.build({
-      ...req.body,
+    // Extraer los datos del body sin incluir el ID
+    const { id, ...datosUsuario } = req.body;
+    
+    const usuario = await Usuario.create({
+      ...datosUsuario,
       confirmado: true // Confirmar automáticamente para pruebas
     });
-    const usuarioAlmacenado = await usuario.save();
-    res.json(usuarioAlmacenado);
+    
+    res.json({
+      msg: "Usuario creado correctamente",
+      usuario: {
+        id: usuario.id,
+        nombre: usuario.nombre,
+        apellido: usuario.apellido,
+        area: usuario.area,
+        rol: usuario.rol,
+        email: usuario.email
+      }
+    });
   } catch (error) {
     console.log(error);
-    res.status(500).send('Hubo un error');
+    if (error.name === 'SequelizeUniqueConstraintError') {
+      return res.status(400).json({ msg: "El email ya está registrado" });
+    }
+    res.status(500).json({ msg: 'Hubo un error al crear el usuario' });
   }
 };
 
