@@ -189,3 +189,35 @@ export const eliminarUsuario = async (req, res) => {
     res.status(500).json({ msg: "Error al eliminar el usuario" });
   }
 };
+
+export const cambiarPassword = async (req, res) => {
+  try {
+    const { passwordActual, passwordNuevo } = req.body;
+    const usuario = req.usuario;
+
+    // Verificar que se envíen ambas contraseñas
+    if (!passwordActual || !passwordNuevo) {
+      return res.status(400).json({ msg: "Ambas contraseñas son requeridas" });
+    }
+
+    // Verificar la contraseña actual
+    if (!usuario.verificarPassword(passwordActual)) {
+      return res.status(400).json({ msg: "La contraseña actual es incorrecta" });
+    }
+
+    // Validar que la nueva contraseña tenga al menos 6 caracteres
+    if (passwordNuevo.length < 6) {
+      return res.status(400).json({ msg: "La nueva contraseña debe tener al menos 6 caracteres" });
+    }
+
+    // Actualizar la contraseña
+    usuario.password = passwordNuevo;
+    await usuario.save();
+
+    res.json({ msg: "Contraseña actualizada correctamente" });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ msg: "Error al cambiar la contraseña" });
+  }
+};
+
