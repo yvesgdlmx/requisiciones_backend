@@ -360,7 +360,7 @@ export const actualizarRequisicionAdmin = async (req, res) => {
     if (!requisicion) {
       return res.status(404).json({ msg: "Requisición no encontrada" });
     }
-    const { status, prioridad, comentario, numeroOrdenCompra, proveedor, tipoCompra, monto, eta } = req.body;
+    const { status, prioridad, comentario, numeroOrdenCompra, proveedor, tipoCompra, monto, eta, archivosExistentes } = req.body;
     // Si se intenta actualizar el status y el rol es superadmin, se rechaza la acción
     if (status !== undefined && usuario.rol === "superadmin") {
       return res.status(403).json({ msg: "No tienes los permisos para actualizar una requisición" });
@@ -405,17 +405,63 @@ export const actualizarRequisicionAdmin = async (req, res) => {
         requisicion.eta = new Date(eta);
       }
     }
-    // Si se suben nuevos archivos mediante req.files, se agregan a los existentes
+
+    // MANEJO DE ARCHIVOS MEJORADO
+    let archivosFinales = [];
+    
+    // Procesar archivos existentes que se conservarán
+    if (archivosExistentes) {
+      try {
+        const archivosParseados = JSON.parse(archivosExistentes);
+        archivosFinales = Array.isArray(archivosParseados) ? archivosParseados : [];
+      } catch (e) {
+        archivosFinales = [];
+      }
+    }
+
+    // Identificar archivos a eliminar de Cloudinary
+    const archivosOriginales = requisicion.archivos || [];
+    const archivosAEliminar = archivosOriginales.filter(
+      original => !archivosFinales.some(
+        conservado =>
+          (typeof conservado === "string" && conservado === original) ||
+          (typeof conservado === "object" && typeof original === "object" && conservado.public_id === original.public_id) ||
+          (typeof conservado === "object" && typeof original === "string" && conservado.url === original)
+      )
+    );
+
+    // Eliminar archivos de Cloudinary
+    for (const file of archivosAEliminar) {
+      if (typeof file === "object" && file.public_id) {
+        let resourceType = "image";
+        let publicId = file.public_id;
+        if (file.url && file.url.match(/\.(pdf)$/i)) {
+          resourceType = "raw";
+          if (!publicId.endsWith('.pdf')) {
+            publicId = publicId + '.pdf';
+          }
+        }
+        try {
+          await cloudinary.uploader.destroy(publicId, { resource_type: resourceType });
+          console.log(`Eliminado de Cloudinary: ${publicId} (${resourceType})`);
+        } catch (err) {
+          console.error("Error eliminando archivo de Cloudinary:", publicId, err);
+        }
+      }
+    }
+
+    // Agregar nuevos archivos subidos
     if (req.files && req.files.length > 0) {
       const nuevosArchivos = req.files.map(file => ({
         url: file.path.replace(/\\/g, "/"),
         public_id: file.filename
       }));
-      // Si ya hay archivos, los conserva y agrega los nuevos
-      requisicion.archivos = Array.isArray(requisicion.archivos)
-        ? [...requisicion.archivos, ...nuevosArchivos]
-        : nuevosArchivos;
+      archivosFinales = [...archivosFinales, ...nuevosArchivos];
     }
+
+    // Actualizar la requisición con los archivos finales
+    requisicion.archivos = archivosFinales;
+
     await requisicion.save();
     // Consulta la requisición actualizada incluyendo datos del usuario y los artículos asociados
     requisicion = await Requisicion.findByPk(id, {
