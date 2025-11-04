@@ -4,6 +4,7 @@ import cors from 'cors'
 import db from './config/db.js'
 import usuarioRoutes from './routes/usuarioRoutes.js'
 import requisicionRoutes from './routes/requisicionRoutes.js'
+import notificacionRoutes from './routes/notificacionRoutes.js'
 
 const app = express();
 app.use(express.json())
@@ -48,6 +49,7 @@ app.use(cors(corsOptions));
 // Rutas
 app.use("/api/usuarios", usuarioRoutes)
 app.use("/api/requisiciones", requisicionRoutes)
+app.use('/api/notificaciones', notificacionRoutes)
 
 const PORT = process.env.PORT || 3000;
 const servidor = app.listen(PORT, () => {

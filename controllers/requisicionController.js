@@ -1,5 +1,6 @@
 import { Requisicion, Usuario, Articulo } from "../models/Index.js";
-import fs from "fs";
+import NotificacionService from "../services/NotificacionService.js";
+import fs, { stat } from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import db from "../config/db.js";
@@ -69,6 +70,9 @@ export const crearRequisicion = async (req, res) => {
       }, { transaction: t });
     }
     await t.commit();
+
+    await NotificacionService.crearNotificacionRequisicionCreada(nuevaRequisicion.id, usuario);
+    
     const requisicionConArticulos = await Requisicion.findByPk(nuevaRequisicion.id, {
       include: [
         { model: Usuario, as: "usuario", attributes: ["id", "nombre", "apellido", "email"] },
@@ -361,24 +365,27 @@ export const actualizarRequisicionAdmin = async (req, res) => {
       return res.status(404).json({ msg: "Requisición no encontrada" });
     }
     const { status, prioridad, comentario, numeroOrdenCompra, proveedor, tipoCompra, monto, eta, archivosExistentes } = req.body;
+
+    // Guardar status anteior para notificaciones
+    const statusAnterior = requisicion.status;
+    const comentarioAnterior = requisicion.comentario;
+    const etaAnterior = requisicion.eta ? new Date(requisicion.eta).toISOString() : null;
+
     // Si se intenta actualizar el status y el rol es superadmin, se rechaza la acción
     if (status !== undefined && usuario.rol === "superadmin") {
       return res.status(403).json({ msg: "No tienes los permisos para actualizar una requisición" });
     }
     if (status !== undefined) {
       requisicion.status = status;
-      // Registra el admin que realizó el cambio
       requisicion.comprador = `${usuario.nombre} ${usuario.apellido}`;
       requisicion.fechaCambioStatus = new Date();
     }
     if (prioridad !== undefined) {
       requisicion.prioridad = prioridad;
     }
-    // Actualizar comentario (opcional)
     if (comentario !== undefined) {
       requisicion.comentario = comentario;
     }
-    // NUEVO: Actualizar número de orden de compra, proveedor y tipo de compra
     if (numeroOrdenCompra !== undefined) {
       requisicion.numeroOrdenCompra = numeroOrdenCompra;
     }
@@ -386,19 +393,16 @@ export const actualizarRequisicionAdmin = async (req, res) => {
       requisicion.proveedor = proveedor;
     }
     if (tipoCompra !== undefined) {
-      // Si viene vacío o como string "null", guarda null real en la BD
       if (tipoCompra === "" || tipoCompra === "null") {
         requisicion.tipoCompra = null;
       } else {
         requisicion.tipoCompra = tipoCompra;
       }
     }
-    // NUEVOS CAMPOS: Actualizar monto y ETA
     if (monto !== undefined) {
       requisicion.monto = monto;
     }
     if (eta !== undefined) {
-      // Si viene vacío, guarda null; si no, convierte a fecha
       if (eta === "" || eta === "null") {
         requisicion.eta = null;
       } else {
@@ -406,10 +410,8 @@ export const actualizarRequisicionAdmin = async (req, res) => {
       }
     }
 
-    // MANEJO DE ARCHIVOS MEJORADO
     let archivosFinales = [];
     
-    // Procesar archivos existentes que se conservarán
     if (archivosExistentes) {
       try {
         const archivosParseados = JSON.parse(archivosExistentes);
@@ -463,6 +465,22 @@ export const actualizarRequisicionAdmin = async (req, res) => {
     requisicion.archivos = archivosFinales;
 
     await requisicion.save();
+
+    //Genrar notificaciones si hubo cambios relevantes
+    if(status !== undefined && status !== statusAnterior) {
+      await NotificacionService.crearNotificacionCambioStatus(requisicion.id, statusAnterior, status, `${usuario.nombre} ${usuario.apellido}`);
+    }
+    //Notificacion por comentario agregado
+    if(comentario !== undefined && comentario !== comentarioAnterior && comentario !== null && comentario !== "") {
+      await NotificacionService.crearNotificacionComentario(requisicion.id, "comentario"); 
+    }
+    // Notificacion por cambio de ETA
+    const nuevoEtaISO = requisicion.eta ? new Date(requisicion.eta).toISOString() : null;
+    if(eta !== undefined && nuevoEtaISO !== etaAnterior && nuevoEtaISO !== null) {
+      await NotificacionService.crearNotificacionEta(requisicion.id, nuevoEtaISO, proveedor);
+    }
+
+
     // Consulta la requisición actualizada incluyendo datos del usuario y los artículos asociados
     requisicion = await Requisicion.findByPk(id, {
       include: [
@@ -497,6 +515,9 @@ export const actualizarRequisicionSuperAdmin = async (req, res) => {
     
     // Actualizar status y comentario del autorizador
     const { status, comentarioAutorizador } = req.body;
+
+    const comentarioAutorizadorAnterior = requisicion.comentarioAutorizador;
+    const statusAnterior = requisicion.status;
     
     if (status !== undefined) {
       requisicion.status = status;
@@ -509,6 +530,15 @@ export const actualizarRequisicionSuperAdmin = async (req, res) => {
     }
     
     await requisicion.save();
+
+    //Gnerar notificaciones si hubo cambios relevantes
+    if(status !== undefined && status !== statusAnterior) {
+      await NotificacionService.crearNotificacionCambioStatus(requisicion.id, statusAnterior, status, "Autorizador");
+    }
+
+    if(comentarioAutorizador !== undefined && comentarioAutorizador !== comentarioAutorizadorAnterior && comentarioAutorizador !== null && comentarioAutorizador !== "") {
+      await NotificacionService.crearNotificacionComentario(requisicion.id, "comentario_autorizador");
+    }
     
     // Obtener la requisición actualizada con sus relaciones
     requisicion = await Requisicion.findByPk(id, {
