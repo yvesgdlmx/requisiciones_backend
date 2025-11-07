@@ -406,7 +406,9 @@ export const actualizarRequisicionAdmin = async (req, res) => {
       if (eta === "" || eta === "null") {
         requisicion.eta = null;
       } else {
-        requisicion.eta = new Date(eta);
+        // Crear la fecha ajustando por zona horaria local
+        const fechaEta = new Date(eta + 'T00:00:00');
+        requisicion.eta = fechaEta;
       }
     }
 
