@@ -11,7 +11,7 @@ const Articulo = db.define("articulos", {
     allowNull: false
   },
   unidadMedida: {
-    type: DataTypes.ENUM("Pieza", "Galon", "Cubeta", "Metros", "Caja", "Paquete", "Frasco", "KG"),
+    type: DataTypes.ENUM("Pieza", "Galon", "Cubeta", "Metros", "Caja", "Paquete", "Frasco", "KG", "Bidon"),
     allowNull: false
   },
   numeroParte: {
