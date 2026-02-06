@@ -5,6 +5,8 @@ import db from './config/db.js'
 import usuarioRoutes from './routes/usuarioRoutes.js'
 import requisicionRoutes from './routes/requisicionRoutes.js'
 import notificacionRoutes from './routes/notificacionRoutes.js'
+import categoriaRoutes from './routes/categoriaRoutes.js'
+import historialGastosRoutes from './routes/historialGastosRoutes.js'
 
 const app = express();
 app.use(express.json())
@@ -50,6 +52,8 @@ app.use(cors(corsOptions));
 app.use("/api/usuarios", usuarioRoutes)
 app.use("/api/requisiciones", requisicionRoutes)
 app.use('/api/notificaciones', notificacionRoutes)
+app.use('/api/categorias', categoriaRoutes)
+app.use('/api/historial-gastos', historialGastosRoutes)
 
 const PORT = process.env.PORT || 3000;
 const servidor = app.listen(PORT, () => {

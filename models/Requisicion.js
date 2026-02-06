@@ -1,6 +1,8 @@
 import { DataTypes } from "sequelize";
 import db from "../config/db.js";
 import Usuario from "./Usuario.js";
+import Categoria from "./Categoria.js";
+
 const Requisicion = db.define(
   "requisiciones",
   {
@@ -117,6 +119,14 @@ const Requisicion = db.define(
       type: DataTypes.DATE,
       allowNull: false,
       defaultValue: DataTypes.NOW
+    },
+    categoriaId: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+      references: {
+        model: "categorias",
+        key: "id"
+      }
     }
   },
   {

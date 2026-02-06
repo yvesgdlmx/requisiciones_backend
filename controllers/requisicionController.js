@@ -1,5 +1,6 @@
-import { Requisicion, Usuario, Articulo } from "../models/Index.js";
+import { Requisicion, Usuario, Articulo, Categoria } from "../models/Index.js";
 import NotificacionService from "../services/NotificacionService.js";
+import HistorialGastoService from "../services/HistorialGastoService.js";
 import fs, { stat } from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -103,6 +104,11 @@ export const obtenerRequisiciones = async (req, res) => {
         {
           model: Articulo,
           as: "articulos"
+        },
+        { 
+          model: Categoria, 
+          as: "categoria", 
+          attributes: ["id", "nombre", "cantidad", "diasPeriodo", "fechaInicio", "fechaFin"]
         }
       ]
     });
@@ -340,6 +346,15 @@ export const actualizarRequisicion = async (req, res) => {
     const requisicionActualizada = await Requisicion.findByPk(requisicion.id, {
       include: [{ model: Articulo, as: "articulos" }]
     });
+
+    // Crear o actualizar historial de gasto si hay categoría y monto
+    if (requisicionActualizada.categoriaId && requisicionActualizada.monto) {
+      await HistorialGastoService.crearOActualizarHistorial(
+        requisicionActualizada,
+        `${usuario.nombre} ${usuario.apellido}`
+      );
+    }
+
     return res.json({ msg: "Requisición actualizada", requisicion: requisicionActualizada });
   } catch (error) {
     await t.rollback();
@@ -364,9 +379,9 @@ export const actualizarRequisicionAdmin = async (req, res) => {
     if (!requisicion) {
       return res.status(404).json({ msg: "Requisición no encontrada" });
     }
-    const { status, prioridad, comentario, numeroOrdenCompra, proveedor, tipoCompra, monto, eta, archivosExistentes } = req.body;
+    const { status, prioridad, comentario, numeroOrdenCompra, proveedor, tipoCompra, monto, eta, archivosExistentes, categoriaGasto, categoriaId } = req.body;
 
-    // Guardar status anteior para notificaciones
+    // Guardar status anterior para notificaciones
     const statusAnterior = requisicion.status;
     const comentarioAnterior = requisicion.comentario;
     const etaAnterior = requisicion.eta ? new Date(requisicion.eta).toISOString() : null;
@@ -399,18 +414,91 @@ export const actualizarRequisicionAdmin = async (req, res) => {
         requisicion.tipoCompra = tipoCompra;
       }
     }
+
+    // CAMBIO: Validar moneda del monto con la categoría antes de asignar
     if (monto !== undefined) {
+      const parseMonto = (m) => {
+        if (!m) return { cantidad: null, moneda: null };
+        const [rawCant, mon] = String(m).trim().split(" ");
+        const cant = parseFloat((rawCant || "").replace(/[$,]/g, ""));
+        return { cantidad: Number.isNaN(cant) ? null : cant, moneda: mon || null };
+      };
+
+      const { moneda: monedaMonto } = parseMonto(monto);
+
+      // Determinar categoría para validar moneda
+      let catIdAValidar = null;
+      if (categoriaId !== undefined) {
+        catIdAValidar = (categoriaId === "" || categoriaId === "null") ? null : Number(categoriaId);
+      } else if (categoriaGasto !== undefined && categoriaGasto !== "" && categoriaGasto !== "null") {
+        const nombre = String(categoriaGasto).trim().toLowerCase();
+        let cat = await Categoria.findOne({ where: { nombre } });
+        if (!cat) {
+          cat = await Categoria.create({
+            nombre,
+            cantidad: 0,
+            diasPeriodo: 30,
+            // CAMBIO: agregar moneda por defecto al crear categoría
+            moneda: "MXN",
+            fechaInicio: new Date(),
+            fechaFin: null
+          });
+        }
+        catIdAValidar = cat.id;
+      } else {
+        catIdAValidar = requisicion.categoriaId;
+      }
+
+      // CAMBIO: Validar que moneda del monto coincida con moneda de la categoría
+      if (catIdAValidar && monedaMonto) {
+        const categoria = await Categoria.findByPk(catIdAValidar);
+        if (categoria && categoria.moneda && categoria.moneda !== monedaMonto) {
+          return res.status(400).json({
+            msg: `La moneda del monto (${monedaMonto}) no coincide con la moneda de la categoría (${categoria.moneda}). La categoría "${categoria.nombre}" usa ${categoria.moneda}.`
+          });
+        }
+      }
+
       requisicion.monto = monto;
     }
+    
+    // Manejo de categoría: preferir categoriaId; si no hay, resolver por nombre (categoriaGasto)
+    if (categoriaId !== undefined) {
+      requisicion.categoriaId = (categoriaId === "" || categoriaId === "null") ? null : Number(categoriaId);
+      requisicion.categoriaGasto = null; // limpiar el campo antiguo
+    } else if (categoriaGasto !== undefined) {
+      if (categoriaGasto === "" || categoriaGasto === "null") {
+        requisicion.categoriaId = null;
+        requisicion.categoriaGasto = null;
+      } else {
+        // Buscar o crear categoría por nombre
+        const nombre = String(categoriaGasto).trim().toLowerCase();
+        let cat = await Categoria.findOne({ where: { nombre } });
+        if (!cat) {
+          // CAMBIO: agregar moneda por defecto al crear categoría
+          cat = await Categoria.create({
+            nombre,
+            cantidad: 0,
+            diasPeriodo: 30,
+            moneda: "MXN",
+            fechaInicio: new Date(),
+            fechaFin: null
+          });
+        }
+        requisicion.categoriaId = cat.id;
+        requisicion.categoriaGasto = categoriaGasto; // mantener por compatibilidad
+      }
+    }
+    
     if (eta !== undefined) {
-  if (eta === "" || eta === "null") {
-    requisicion.eta = null;
-  } else {
-    // SOLUCIÓN: Forzar interpretación UTC para que funcione igual en local y producción
-    const fechaEta = new Date(eta + 'T12:00:00.000Z');
-    requisicion.eta = fechaEta;
-  }
-}
+      if (eta === "" || eta === "null") {
+        requisicion.eta = null;
+      } else {
+        // SOLUCIÓN: Forzar interpretación UTC para que funcione igual en local y producción
+        const fechaEta = new Date(eta + 'T12:00:00.000Z');
+        requisicion.eta = fechaEta;
+      }
+    }
 
     let archivosFinales = [];
     
@@ -468,28 +556,36 @@ export const actualizarRequisicionAdmin = async (req, res) => {
 
     await requisicion.save();
 
-    //Genrar notificaciones si hubo cambios relevantes
+    // Generar notificaciones si hubo cambios relevantes
     if(status !== undefined && status !== statusAnterior) {
       await NotificacionService.crearNotificacionCambioStatus(requisicion.id, statusAnterior, status, `${usuario.nombre} ${usuario.apellido}`);
     }
-    //Notificacion por comentario agregado
+    // Notificación por comentario agregado
     if(comentario !== undefined && comentario !== comentarioAnterior && comentario !== null && comentario !== "") {
       await NotificacionService.crearNotificacionComentario(requisicion.id, "comentario"); 
     }
-    // Notificacion por cambio de ETA
+    // Notificación por cambio de ETA
     const nuevoEtaISO = requisicion.eta ? new Date(requisicion.eta).toISOString() : null;
     if(eta !== undefined && nuevoEtaISO !== etaAnterior && nuevoEtaISO !== null) {
       await NotificacionService.crearNotificacionEta(requisicion.id, nuevoEtaISO, proveedor);
     }
 
-
-    // Consulta la requisición actualizada incluyendo datos del usuario y los artículos asociados
+    // Consulta la requisición actualizada incluyendo datos del usuario, artículos y categoría
     requisicion = await Requisicion.findByPk(id, {
       include: [
         { model: Usuario, as: "usuario", attributes: ["id", "nombre", "apellido", "email"] },
-        { model: Articulo, as: "articulos" }
+        { model: Articulo, as: "articulos" },
+        // CAMBIO: incluir moneda en la respuesta
+        { model: Categoria, as: "categoria", attributes: ["id", "nombre", "cantidad", "diasPeriodo", "fechaInicio", "fechaFin", "moneda"] }
       ]
     });
+
+    // Crear o actualizar historial de gasto (el service maneja todo internamente)
+    await HistorialGastoService.crearOActualizarHistorial(
+      requisicion,
+      `${usuario.nombre} ${usuario.apellido}`
+    );
+
     return res.json({ msg: "Requisición actualizada (admin)", requisicion });
   } catch (error) {
     console.error("Error al actualizar la requisición (admin):", error);
