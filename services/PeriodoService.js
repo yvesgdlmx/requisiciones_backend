@@ -4,6 +4,9 @@ class PeriodoService {
    */
   static calcularFechaFin(fechaInicio, periodo) {
     const fecha = new Date(fechaInicio);
+
+    // Normalizar inicio a 00:00:00.000
+    fecha.setHours(0, 0, 0, 0);
     
     switch(periodo) {
       case "semana":
@@ -19,6 +22,9 @@ class PeriodoService {
         fecha.setMonth(fecha.getMonth() + 3);
         break;
     }
+
+    // Fin del día 23:59:59.999
+    fecha.setHours(23, 59, 59, 999);
     
     return fecha;
   }
@@ -39,6 +45,8 @@ class PeriodoService {
   static calcularSiguientePeriodo(fechaFinActual, periodo) {
     const fechaInicio = new Date(fechaFinActual);
     fechaInicio.setDate(fechaInicio.getDate() + 1); // Empezar al día siguiente
+    fechaInicio.setHours(0, 0, 0, 0);
+
     const fechaFin = this.calcularFechaFin(fechaInicio, periodo);
     
     return { fechaInicio, fechaFin };
@@ -57,6 +65,8 @@ class PeriodoService {
    */
   static obtenerPeriodoActual(fechaInicio, periodo, fechaActual = new Date()) {
     let inicio = new Date(fechaInicio);
+    inicio.setHours(0, 0, 0, 0);
+
     let fin = this.calcularFechaFin(inicio, periodo);
     
     // Si la fecha actual está fuera del período, calcular el siguiente
@@ -78,14 +88,20 @@ class PeriodoService {
    */
   static obtenerPeriodoActualPorDias(fechaInicio, diasPeriodo, fechaActual = new Date()) {
     let inicio = new Date(fechaInicio);
+    inicio.setHours(0, 0, 0, 0);
+
     let fin = new Date(inicio);
     fin.setDate(fin.getDate() + (diasPeriodo || 30)); // Default 30 días
+    fin.setHours(23, 59, 59, 999);
     
     while (fechaActual > fin) {
       inicio = new Date(fin);
       inicio.setDate(inicio.getDate() + 1);
+      inicio.setHours(0, 0, 0, 0);
+
       fin = new Date(inicio);
       fin.setDate(fin.getDate() + (diasPeriodo || 30));
+      fin.setHours(23, 59, 59, 999);
     }
     
     return { fechaInicio: inicio, fechaFin: fin };
