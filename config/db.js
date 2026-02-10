@@ -14,10 +14,6 @@ const sequelize = new Sequelize(
 
     // Ajuste correcto de zona horaria (CDMX UTC-6)
     timezone: '-06:00',
-    dialectOptions: {
-      connectTimeout: 60000,
-      useUTC: false,
-    },
 
     define: {
       timestamps: true
@@ -31,6 +27,10 @@ const sequelize = new Sequelize(
     },
 
     operatorAliases: false,
+
+    dialectOptions: {
+      connectTimeout: 60000
+    },
 
     logging: false, // desactiva logs de SQL
     retry: {

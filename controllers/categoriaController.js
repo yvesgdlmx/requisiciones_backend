@@ -29,14 +29,15 @@ export const crearCategoria = async (req, res) => {
       return res.status(400).json({ msg: "Ya existe una categoría con ese nombre" });
     }
     
-    // ✅ Crear fecha exacta en hora local (00:00)
-    const fechaSoloStr = fechaInicio.split('T')[0];
+    // ✅ Crear fecha exacta: día seleccionado a las 12:00:00 UTC
+    const fechaSoloStr = fechaInicio.split('T')[0]; // "2026-02-08"
     const [year, month, day] = fechaSoloStr.split('-').map(Number);
-    const inicio = new Date(year, month - 1, day, 0, 0, 0, 0);
+    
+    const inicio = new Date(Date.UTC(year, month - 1, day, 12, 0, 0, 0));
     
     const fechaFin = new Date(inicio);
-    fechaFin.setDate(fechaFin.getDate() + Number(diasPeriodo) - 1);
-    fechaFin.setHours(23, 59, 59, 999);
+    fechaFin.setUTCDate(fechaFin.getUTCDate() + Number(diasPeriodo) - 1);
+    fechaFin.setUTCHours(23, 59, 59, 999);
     
     const nuevaCategoria = await Categoria.create({
       nombre,
@@ -153,6 +154,7 @@ export const actualizarCategoria = async (req, res) => {
     
     const { nombre, cantidad, diasPeriodo, fechaInicio, moneda } = req.body;
     
+    // Si se intenta cambiar el nombre, verificar que no exista otra categoría con ese nombre
     if (nombre && nombre !== categoria.nombre) {
       const categoriaExistente = await Categoria.findOne({ where: { nombre } });
       if (categoriaExistente) {
@@ -160,6 +162,7 @@ export const actualizarCategoria = async (req, res) => {
       }
     }
     
+    // Actualizar campos
     if (nombre !== undefined) categoria.nombre = nombre;
     if (cantidad !== undefined) categoria.cantidad = cantidad;
 
@@ -172,22 +175,25 @@ export const actualizarCategoria = async (req, res) => {
     
     if (diasPeriodo !== undefined) {
       categoria.diasPeriodo = Number(diasPeriodo);
+      // ✅ Recalcular fechaFin manteniendo la hora de inicio
       const fin = new Date(categoria.fechaInicio);
-      fin.setDate(fin.getDate() + Number(diasPeriodo) - 1);
-      fin.setHours(23, 59, 59, 999);
+      fin.setUTCDate(fin.getUTCDate() + Number(diasPeriodo) - 1);
+      fin.setUTCHours(23, 59, 59, 999);
       categoria.fechaFin = fin;
     }
     
     if (fechaInicio !== undefined && fechaInicio !== categoria.fechaInicio) {
+      // ✅ Crear fecha exacta con hora 12:00:00 UTC
       const fechaSoloStr = fechaInicio.split('T')[0];
       const [year, month, day] = fechaSoloStr.split('-').map(Number);
       
-      const newInicio = new Date(year, month - 1, day, 0, 0, 0, 0);
+      const newInicio = new Date(Date.UTC(year, month - 1, day, 12, 0, 0, 0));
       categoria.fechaInicio = newInicio;
       
+      // Recalcular fechaFin
       const newFin = new Date(newInicio);
-      newFin.setDate(newFin.getDate() + (categoria.diasPeriodo || 30) - 1);
-      newFin.setHours(23, 59, 59, 999);
+      newFin.setUTCDate(newFin.getUTCDate() + (categoria.diasPeriodo || 30) - 1);
+      newFin.setUTCHours(23, 59, 59, 999);
       categoria.fechaFin = newFin;
     }
     
