@@ -32,10 +32,6 @@ const sequelize = new Sequelize(
 
     operatorAliases: false,
 
-    dialectOptions: {
-      connectTimeout: 60000
-    },
-
     logging: false, // desactiva logs de SQL
     retry: {
       max: 3 // intenta reconectar hasta 3 veces antes de marcar error
