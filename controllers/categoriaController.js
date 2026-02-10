@@ -2,7 +2,6 @@ import { Categoria, Requisicion } from "../models/Index.js";
 import PeriodoService from "../services/PeriodoService.js";
 import { Op } from "sequelize";
 
-// Crear una nueva categoría
 export const crearCategoria = async (req, res) => {
   try {
     const usuario = req.usuario;
@@ -15,39 +14,41 @@ export const crearCategoria = async (req, res) => {
       return res.status(403).json({ msg: "Acción no permitida. Solo admin o superadmin pueden crear categorías." });
     }
     
-  const { nombre, cantidad, diasPeriodo, fechaInicio, moneda } = req.body;
-  
-  if (!nombre || !cantidad || !diasPeriodo || !fechaInicio || !moneda) {
-    return res.status(400).json({ msg: "Faltan campos requeridos: nombre, moneda, cantidad, diasPeriodo y fechaInicio" });
-  }
-
-  if (!["MXN", "USD", "EUR"].includes(moneda)) {
-    return res.status(400).json({ msg: "Moneda inválida. Use MXN, USD o EUR." })  // ✅ CORRECTO
-  }
-  
-  const categoriaExistente = await Categoria.findOne({ where: { nombre } });
-  if (categoriaExistente) {
-    return res.status(400).json({ msg: "Ya existe una categoría con ese nombre" });
-  }
-  
-  // Calcular fecha de fin con bordes de día completos
-  const inicio = new Date(fechaInicio);
-  inicio.setHours(0, 0, 0, 0);
-  
-  const fechaFin = new Date(inicio);
-  fechaFin.setDate(fechaFin.getDate() + Number(diasPeriodo) - 1);
-  fechaFin.setHours(23, 59, 59, 999);
-  
-  const nuevaCategoria = await Categoria.create({
-    nombre,
-    cantidad,
-    diasPeriodo: Number(diasPeriodo),
-    fechaInicio: inicio,
-    fechaFin: fechaFin,
-    requiereReinicio: false,
-    moneda
-  });
+    const { nombre, cantidad, diasPeriodo, fechaInicio, moneda } = req.body;
     
+    if (!nombre || !cantidad || !diasPeriodo || !fechaInicio || !moneda) {
+      return res.status(400).json({ msg: "Faltan campos requeridos: nombre, moneda, cantidad, diasPeriodo y fechaInicio" });
+    }
+
+    if (!["MXN", "USD", "EUR"].includes(moneda)) {
+      return res.status(400).json({ msg: "Moneda inválida. Use MXN, USD o EUR." })
+    }
+    
+    const categoriaExistente = await Categoria.findOne({ where: { nombre } });
+    if (categoriaExistente) {
+      return res.status(400).json({ msg: "Ya existe una categoría con ese nombre" });
+    }
+    
+    // ✅ Crear fecha exacta: día seleccionado a las 12:00:00 UTC
+    const fechaSoloStr = fechaInicio.split('T')[0]; // "2026-02-08"
+    const [year, month, day] = fechaSoloStr.split('-').map(Number);
+    
+    const inicio = new Date(Date.UTC(year, month - 1, day, 12, 0, 0, 0));
+    
+    const fechaFin = new Date(inicio);
+    fechaFin.setUTCDate(fechaFin.getUTCDate() + Number(diasPeriodo) - 1);
+    fechaFin.setUTCHours(23, 59, 59, 999);
+    
+    const nuevaCategoria = await Categoria.create({
+      nombre,
+      cantidad,
+      diasPeriodo: Number(diasPeriodo),
+      fechaInicio: inicio,
+      fechaFin: fechaFin,
+      requiereReinicio: false,
+      moneda
+    });
+      
     return res.status(201).json({
       msg: "Categoría creada exitosamente",
       categoria: nuevaCategoria
@@ -174,22 +175,25 @@ export const actualizarCategoria = async (req, res) => {
     
     if (diasPeriodo !== undefined) {
       categoria.diasPeriodo = Number(diasPeriodo);
-      // Recalcular fechaFin si cambia diasPeriodo
+      // ✅ Recalcular fechaFin manteniendo la hora de inicio
       const fin = new Date(categoria.fechaInicio);
-      fin.setDate(fin.getDate() + Number(diasPeriodo) - 1);
-      fin.setHours(23, 59, 59, 999);
+      fin.setUTCDate(fin.getUTCDate() + Number(diasPeriodo) - 1);
+      fin.setUTCHours(23, 59, 59, 999);
       categoria.fechaFin = fin;
     }
     
     if (fechaInicio !== undefined && fechaInicio !== categoria.fechaInicio) {
-      const newInicio = new Date(fechaInicio);
-      newInicio.setHours(0, 0, 0, 0);
+      // ✅ Crear fecha exacta con hora 12:00:00 UTC
+      const fechaSoloStr = fechaInicio.split('T')[0];
+      const [year, month, day] = fechaSoloStr.split('-').map(Number);
+      
+      const newInicio = new Date(Date.UTC(year, month - 1, day, 12, 0, 0, 0));
       categoria.fechaInicio = newInicio;
       
-      // Recalcular fechaFin con bordes correctos
+      // Recalcular fechaFin
       const newFin = new Date(newInicio);
-      newFin.setDate(newFin.getDate() + (categoria.diasPeriodo || 30) - 1);
-      newFin.setHours(23, 59, 59, 999);
+      newFin.setUTCDate(newFin.getUTCDate() + (categoria.diasPeriodo || 30) - 1);
+      newFin.setUTCHours(23, 59, 59, 999);
       categoria.fechaFin = newFin;
     }
     
