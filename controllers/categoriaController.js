@@ -2,6 +2,7 @@ import { Categoria, Requisicion } from "../models/Index.js";
 import PeriodoService from "../services/PeriodoService.js";
 import { Op } from "sequelize";
 
+// Crear una nueva categoría
 export const crearCategoria = async (req, res) => {
   try {
     const usuario = req.usuario;
@@ -14,41 +15,39 @@ export const crearCategoria = async (req, res) => {
       return res.status(403).json({ msg: "Acción no permitida. Solo admin o superadmin pueden crear categorías." });
     }
     
-    const { nombre, cantidad, diasPeriodo, fechaInicio, moneda } = req.body;
-    
-    if (!nombre || !cantidad || !diasPeriodo || !fechaInicio || !moneda) {
-      return res.status(400).json({ msg: "Faltan campos requeridos: nombre, moneda, cantidad, diasPeriodo y fechaInicio" });
-    }
+  const { nombre, cantidad, diasPeriodo, fechaInicio, moneda } = req.body;
+  
+  if (!nombre || !cantidad || !diasPeriodo || !fechaInicio || !moneda) {
+    return res.status(400).json({ msg: "Faltan campos requeridos: nombre, moneda, cantidad, diasPeriodo y fechaInicio" });
+  }
 
-    if (!["MXN", "USD", "EUR"].includes(moneda)) {
-      return res.status(400).json({ msg: "Moneda inválida. Use MXN, USD o EUR." })
-    }
+  if (!["MXN", "USD", "EUR"].includes(moneda)) {
+    return res.status(400).json({ msg: "Moneda inválida. Use MXN, USD o EUR." })  // ✅ CORRECTO
+  }
+  
+  const categoriaExistente = await Categoria.findOne({ where: { nombre } });
+  if (categoriaExistente) {
+    return res.status(400).json({ msg: "Ya existe una categoría con ese nombre" });
+  }
+  
+  // Calcular fecha de fin con bordes de día completos
+  const inicio = new Date(fechaInicio);
+  inicio.setHours(0, 0, 0, 0);
+  
+  const fechaFin = new Date(inicio);
+  fechaFin.setDate(fechaFin.getDate() + Number(diasPeriodo) - 1);
+  fechaFin.setHours(23, 59, 59, 999);
+  
+  const nuevaCategoria = await Categoria.create({
+    nombre,
+    cantidad,
+    diasPeriodo: Number(diasPeriodo),
+    fechaInicio: inicio,
+    fechaFin: fechaFin,
+    requiereReinicio: false,
+    moneda
+  });
     
-    const categoriaExistente = await Categoria.findOne({ where: { nombre } });
-    if (categoriaExistente) {
-      return res.status(400).json({ msg: "Ya existe una categoría con ese nombre" });
-    }
-    
-    // ✅ Fecha local: inicio 00:00:00.000
-    const fechaSoloStr = fechaInicio.split('T')[0];
-    const [year, month, day] = fechaSoloStr.split('-').map(Number);
-    const inicio = new Date(year, month - 1, day, 0, 0, 0, 0);
-    
-    // ✅ Fin del día 23:59:59.999
-    const fechaFin = new Date(inicio);
-    fechaFin.setDate(fechaFin.getDate() + Number(diasPeriodo) - 1);
-    fechaFin.setHours(23, 59, 59, 999);
-    
-    const nuevaCategoria = await Categoria.create({
-      nombre,
-      cantidad,
-      diasPeriodo: Number(diasPeriodo),
-      fechaInicio: inicio,
-      fechaFin: fechaFin,
-      requiereReinicio: false,
-      moneda
-    });
-      
     return res.status(201).json({
       msg: "Categoría creada exitosamente",
       categoria: nuevaCategoria
@@ -175,22 +174,19 @@ export const actualizarCategoria = async (req, res) => {
     
     if (diasPeriodo !== undefined) {
       categoria.diasPeriodo = Number(diasPeriodo);
-      // ✅ Recalcular fechaFin desde la fechaInicio (00:00) y cerrar a 23:59
+      // Recalcular fechaFin si cambia diasPeriodo
       const fin = new Date(categoria.fechaInicio);
-      fin.setHours(0, 0, 0, 0);
       fin.setDate(fin.getDate() + Number(diasPeriodo) - 1);
       fin.setHours(23, 59, 59, 999);
       categoria.fechaFin = fin;
     }
     
     if (fechaInicio !== undefined && fechaInicio !== categoria.fechaInicio) {
-      // ✅ Fecha local: inicio 00:00:00.000
-      const fechaSoloStr = fechaInicio.split('T')[0];
-      const [year, month, day] = fechaSoloStr.split('-').map(Number);
-      const newInicio = new Date(year, month - 1, day, 0, 0, 0, 0);
+      const newInicio = new Date(fechaInicio);
+      newInicio.setHours(0, 0, 0, 0);
       categoria.fechaInicio = newInicio;
       
-      // Recalcular fechaFin
+      // Recalcular fechaFin con bordes correctos
       const newFin = new Date(newInicio);
       newFin.setDate(newFin.getDate() + (categoria.diasPeriodo || 30) - 1);
       newFin.setHours(23, 59, 59, 999);
