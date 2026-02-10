@@ -12,8 +12,8 @@ const sequelize = new Sequelize(
     port: process.env.DB_PORT || 3306,
     dialect: 'mysql',
 
-    // Ajuste correcto de zona horaria (CDMX UTC-6)
-    timezone: '-06:00',
+    // Mantener todo en UTC para evitar conversiones
+    timezone: '+00:00',
 
     define: {
       timestamps: true
@@ -29,7 +29,9 @@ const sequelize = new Sequelize(
     operatorAliases: false,
 
     dialectOptions: {
-      connectTimeout: 60000
+      connectTimeout: 60000,
+      // Desactivar conversión de timezone en MySQL
+      timezone: '+00:00'
     },
 
     logging: false, // desactiva logs de SQL
