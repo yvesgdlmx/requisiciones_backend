@@ -14,6 +14,10 @@ const sequelize = new Sequelize(
 
     // Ajuste correcto de zona horaria (CDMX UTC-6)
     timezone: '-06:00',
+    dialectOptions: {
+      connectTimeout: 60000,
+      useUTC: false,
+    },
 
     define: {
       timestamps: true
