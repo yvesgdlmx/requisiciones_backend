@@ -31,8 +31,8 @@ export const crearCategoria = async (req, res) => {
   }
   
   // Calcular fecha de fin con bordes de día completos
+  // Parsear el datetime directamente sin conversión de timezone
   const inicio = new Date(fechaInicio);
-  inicio.setHours(0, 0, 0, 0);
   
   const fechaFin = new Date(inicio);
   fechaFin.setDate(fechaFin.getDate() + Number(diasPeriodo) - 1);
@@ -181,9 +181,9 @@ export const actualizarCategoria = async (req, res) => {
       categoria.fechaFin = fin;
     }
     
-    if (fechaInicio !== undefined && fechaInicio !== categoria.fechaInicio) {
+    if (fechaInicio !== undefined) {
+      // Parsear el datetime directamente sin conversión de timezone
       const newInicio = new Date(fechaInicio);
-      newInicio.setHours(0, 0, 0, 0);
       categoria.fechaInicio = newInicio;
       
       // Recalcular fechaFin con bordes correctos
