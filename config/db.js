@@ -12,7 +12,8 @@ const sequelize = new Sequelize(
     port: process.env.DB_PORT || 3306,
     dialect: 'mysql',
 
-    
+    // Ajuste correcto de zona horaria (CDMX UTC-6)
+    timezone: '-06:00',
 
     define: {
       timestamps: true
