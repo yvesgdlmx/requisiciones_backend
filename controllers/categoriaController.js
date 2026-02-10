@@ -30,13 +30,28 @@ export const crearCategoria = async (req, res) => {
     return res.status(400).json({ msg: "Ya existe una categoría con ese nombre" });
   }
   
+  // ======= DEBUG LOGS =======
+  console.log("=== DEBUG CREAR CATEGORÍA ===");
+  console.log("1. Fecha recibida del frontend:", fechaInicio);
+  console.log("2. Tipo de dato:", typeof fechaInicio);
+  console.log("3. Zona horaria del servidor:", Intl.DateTimeFormat().resolvedOptions().timeZone);
+  console.log("4. Offset del servidor:", new Date().getTimezoneOffset());
+  
   // Calcular fecha de fin con bordes de día completos
+  // Parsear el datetime directamente sin conversión de timezone
   const inicio = new Date(fechaInicio);
-  inicio.setHours(0, 0, 0, 0);
+  
+  console.log("5. Fecha parseada (inicio):", inicio);
+  console.log("6. inicio.toString():", inicio.toString());
+  console.log("7. inicio.toISOString():", inicio.toISOString());
+  console.log("8. inicio.toLocaleString():", inicio.toLocaleString());
   
   const fechaFin = new Date(inicio);
   fechaFin.setDate(fechaFin.getDate() + Number(diasPeriodo) - 1);
   fechaFin.setHours(23, 59, 59, 999);
+  
+  console.log("9. Fecha fin calculada:", fechaFin.toISOString());
+  console.log("=========================");
   
   const nuevaCategoria = await Categoria.create({
     nombre,
@@ -47,6 +62,13 @@ export const crearCategoria = async (req, res) => {
     requiereReinicio: false,
     moneda
   });
+  
+  console.log("10. Categoría guardada en BD:", {
+    id: nuevaCategoria.id,
+    fechaInicio: nuevaCategoria.fechaInicio,
+    fechaFin: nuevaCategoria.fechaFin
+  });
+  console.log("=========================\n");
     
     return res.status(201).json({
       msg: "Categoría creada exitosamente",
@@ -181,9 +203,9 @@ export const actualizarCategoria = async (req, res) => {
       categoria.fechaFin = fin;
     }
     
-    if (fechaInicio !== undefined && fechaInicio !== categoria.fechaInicio) {
+    if (fechaInicio !== undefined) {
+      // Parsear el datetime directamente sin conversión de timezone
       const newInicio = new Date(fechaInicio);
-      newInicio.setHours(0, 0, 0, 0);
       categoria.fechaInicio = newInicio;
       
       // Recalcular fechaFin con bordes correctos
