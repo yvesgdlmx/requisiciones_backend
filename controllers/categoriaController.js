@@ -2,6 +2,37 @@ import { Categoria, Requisicion } from "../models/Index.js";
 import PeriodoService from "../services/PeriodoService.js";
 import { Op } from "sequelize";
 
+const parseFechaInicioUTC = (fechaInicio) => {
+  if (!fechaInicio) return null;
+  if (fechaInicio instanceof Date) return new Date(fechaInicio.getTime());
+  if (typeof fechaInicio === "string") {
+    const datePart = fechaInicio.split("T")[0].split(" ")[0];
+    const [y, m, d] = datePart.split("-").map(Number);
+    if (!Number.isNaN(y) && !Number.isNaN(m) && !Number.isNaN(d)) {
+      return new Date(Date.UTC(y, m - 1, d, 0, 0, 0, 0));
+    }
+  }
+  return new Date(fechaInicio);
+};
+
+const addDaysUTC = (date, days) => {
+  const d = new Date(date);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d;
+};
+
+const startOfDayUTC = (date) => {
+  const d = new Date(date);
+  d.setUTCHours(0, 0, 0, 0);
+  return d;
+};
+
+const endOfDayUTC = (date) => {
+  const d = new Date(date);
+  d.setUTCHours(23, 59, 59, 999);
+  return d;
+};
+
 // Crear una nueva categoría
 export const crearCategoria = async (req, res) => {
   try {
@@ -39,16 +70,14 @@ export const crearCategoria = async (req, res) => {
   
   // Calcular fecha de fin con bordes de día completos
   // Parsear el datetime directamente sin conversión de timezone
-  const inicio = new Date(fechaInicio);
+  const inicio = startOfDayUTC(parseFechaInicioUTC(fechaInicio));
   
   console.log("5. Fecha parseada (inicio):", inicio);
   console.log("6. inicio.toString():", inicio.toString());
   console.log("7. inicio.toISOString():", inicio.toISOString());
   console.log("8. inicio.toLocaleString():", inicio.toLocaleString());
   
-  const fechaFin = new Date(inicio);
-  fechaFin.setDate(fechaFin.getDate() + Number(diasPeriodo) - 1);
-  fechaFin.setHours(23, 59, 59, 999);
+  const fechaFin = endOfDayUTC(addDaysUTC(inicio, Number(diasPeriodo) - 1));
   
   console.log("9. Fecha fin calculada:", fechaFin.toISOString());
   console.log("=========================");
@@ -92,13 +121,8 @@ export const obtenerCategorias = async (req, res) => {
       categorias.map(async (cat) => {
         if (PeriodoService.necesitaReinicio(cat.fechaFin)) {
           const dias = Number(cat.diasPeriodo || 30);
-          let inicio = new Date(cat.fechaFin);
-          inicio.setDate(inicio.getDate() + 1);
-          inicio.setHours(0, 0, 0, 0);
-          
-          let fin = new Date(inicio);
-          fin.setDate(fin.getDate() + dias - 1);
-          fin.setHours(23, 59, 59, 999);
+          let inicio = startOfDayUTC(addDaysUTC(cat.fechaFin, 1));
+          let fin = endOfDayUTC(addDaysUTC(inicio, dias - 1));
           
           cat.fechaInicio = inicio;
           cat.fechaFin = fin;
@@ -131,13 +155,8 @@ export const obtenerCategoria = async (req, res) => {
     // Verificar si necesita actualizar el período
     if (PeriodoService.necesitaReinicio(categoria.fechaFin)) {
       const dias = Number(categoria.diasPeriodo || 30);
-      let inicio = new Date(categoria.fechaFin);
-      inicio.setDate(inicio.getDate() + 1);
-      inicio.setHours(0, 0, 0, 0);
-      
-      let fin = new Date(inicio);
-      fin.setDate(fin.getDate() + dias - 1);
-      fin.setHours(23, 59, 59, 999);
+      let inicio = startOfDayUTC(addDaysUTC(categoria.fechaFin, 1));
+      let fin = endOfDayUTC(addDaysUTC(inicio, dias - 1));
       
       categoria.fechaInicio = inicio;
       categoria.fechaFin = fin;
@@ -197,21 +216,17 @@ export const actualizarCategoria = async (req, res) => {
     if (diasPeriodo !== undefined) {
       categoria.diasPeriodo = Number(diasPeriodo);
       // Recalcular fechaFin si cambia diasPeriodo
-      const fin = new Date(categoria.fechaInicio);
-      fin.setDate(fin.getDate() + Number(diasPeriodo) - 1);
-      fin.setHours(23, 59, 59, 999);
+      const fin = endOfDayUTC(addDaysUTC(startOfDayUTC(categoria.fechaInicio), Number(diasPeriodo) - 1));
       categoria.fechaFin = fin;
     }
     
     if (fechaInicio !== undefined) {
       // Parsear el datetime directamente sin conversión de timezone
-      const newInicio = new Date(fechaInicio);
+      const newInicio = startOfDayUTC(parseFechaInicioUTC(fechaInicio));
       categoria.fechaInicio = newInicio;
       
       // Recalcular fechaFin con bordes correctos
-      const newFin = new Date(newInicio);
-      newFin.setDate(newFin.getDate() + (categoria.diasPeriodo || 30) - 1);
-      newFin.setHours(23, 59, 59, 999);
+      const newFin = endOfDayUTC(addDaysUTC(newInicio, (categoria.diasPeriodo || 30) - 1));
       categoria.fechaFin = newFin;
     }
     
@@ -348,22 +363,13 @@ export const obtenerPresupuestoDisponible = async (req, res) => {
     const hoy = new Date();
     const dias = Number(categoria.diasPeriodo || 30);
 
-    let inicio = new Date(categoria.fechaInicio);
-    inicio.setHours(0, 0, 0, 0);
-
-    let fin = new Date(inicio);
-    fin.setDate(fin.getDate() + dias - 1);
-    fin.setHours(23, 59, 59, 999);
+    let inicio = startOfDayUTC(categoria.fechaInicio);
+    let fin = endOfDayUTC(addDaysUTC(inicio, dias - 1));
 
     // Si el período ya expiró, iterar hasta el período vigente
     while (hoy > fin) {
-      inicio = new Date(fin);
-      inicio.setDate(inicio.getDate() + 1);
-      inicio.setHours(0, 0, 0, 0);
-
-      fin = new Date(inicio);
-      fin.setDate(fin.getDate() + dias - 1);
-      fin.setHours(23, 59, 59, 999);
+      inicio = startOfDayUTC(addDaysUTC(fin, 1));
+      fin = endOfDayUTC(addDaysUTC(inicio, dias - 1));
     }
 
     const requisiciones = await Requisicion.findAll({

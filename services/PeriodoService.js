@@ -1,23 +1,36 @@
 class PeriodoService {
+  static _toDate(value) {
+    if (value instanceof Date) return new Date(value.getTime());
+    return new Date(value);
+  }
+
+  static _addDaysUTC(date, days) {
+    const d = new Date(date);
+    d.setUTCDate(d.getUTCDate() + days);
+    return d;
+  }
+
+  static _addMonthsUTC(date, months) {
+    const d = new Date(date);
+    d.setUTCMonth(d.getUTCMonth() + months);
+    return d;
+  }
+
   /**
    * Calcula la fecha de fin basada en fecha de inicio y período
    */
   static calcularFechaFin(fechaInicio, periodo) {
-    const fecha = new Date(fechaInicio);
+    const fecha = this._toDate(fechaInicio);
     
     switch(periodo) {
       case "semana":
-        fecha.setDate(fecha.getDate() + 7);
-        break;
+        return this._addDaysUTC(fecha, 7);
       case "quincena":
-        fecha.setDate(fecha.getDate() + 15);
-        break;
+        return this._addDaysUTC(fecha, 15);
       case "mes":
-        fecha.setMonth(fecha.getMonth() + 1);
-        break;
+        return this._addMonthsUTC(fecha, 1);
       case "varios meses":
-        fecha.setMonth(fecha.getMonth() + 3);
-        break;
+        return this._addMonthsUTC(fecha, 3);
     }
     
     return fecha;
@@ -37,8 +50,7 @@ class PeriodoService {
    * Calcula el siguiente período después del actual
    */
   static calcularSiguientePeriodo(fechaFinActual, periodo) {
-    const fechaInicio = new Date(fechaFinActual);
-    fechaInicio.setDate(fechaInicio.getDate() + 1); // Empezar al día siguiente
+    const fechaInicio = this._addDaysUTC(fechaFinActual, 1); // Empezar al día siguiente
     const fechaFin = this.calcularFechaFin(fechaInicio, periodo);
     
     return { fechaInicio, fechaFin };
@@ -56,7 +68,7 @@ class PeriodoService {
    * Si ha pasado el período, calcula el siguiente automáticamente
    */
   static obtenerPeriodoActual(fechaInicio, periodo, fechaActual = new Date()) {
-    let inicio = new Date(fechaInicio);
+    let inicio = this._toDate(fechaInicio);
     let fin = this.calcularFechaFin(inicio, periodo);
     
     // Si la fecha actual está fuera del período, calcular el siguiente
@@ -77,15 +89,12 @@ class PeriodoService {
    * Obtiene el período actual por días (para compatibilidad con obtenerPresupuestoDisponible)
    */
   static obtenerPeriodoActualPorDias(fechaInicio, diasPeriodo, fechaActual = new Date()) {
-    let inicio = new Date(fechaInicio);
-    let fin = new Date(inicio);
-    fin.setDate(fin.getDate() + (diasPeriodo || 30)); // Default 30 días
+    let inicio = this._toDate(fechaInicio);
+    let fin = this._addDaysUTC(inicio, diasPeriodo || 30); // Default 30 días
     
     while (fechaActual > fin) {
-      inicio = new Date(fin);
-      inicio.setDate(inicio.getDate() + 1);
-      fin = new Date(inicio);
-      fin.setDate(fin.getDate() + (diasPeriodo || 30));
+      inicio = this._addDaysUTC(fin, 1);
+      fin = this._addDaysUTC(inicio, diasPeriodo || 30);
     }
     
     return { fechaInicio: inicio, fechaFin: fin };
