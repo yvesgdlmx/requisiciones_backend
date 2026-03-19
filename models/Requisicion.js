@@ -64,6 +64,8 @@ const Requisicion = db.define(
         "aprobada",
         "esperando autorizacion",
         "autorizada",
+        "proceso de pago",
+        "proveedor preparando envío",
         "rechazada",
         "liberacion aduanal",
         "proceso de entrega",
