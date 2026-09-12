@@ -7,6 +7,7 @@ import requisicionRoutes from './routes/requisicionRoutes.js'
 import notificacionRoutes from './routes/notificacionRoutes.js'
 import categoriaRoutes from './routes/categoriaRoutes.js'
 import historialGastosRoutes from './routes/historialGastosRoutes.js'
+import historialStatusRoutes from './routes/historialStatusRoutes.js'
 
 const app = express();
 app.use(express.json())
@@ -29,21 +30,21 @@ const FRONTEND = process.env.FRONTEND_URL; // ej: "http://localhost:5173"
 const whitelist = [FRONTEND];
 
 const corsOptions = {
-  origin: (origin, callback) => {
-    // allow requests with no origin (mobile apps, curl, Postman)
-    if (!origin) return callback(null, true);
+    origin: (origin, callback) => {
+        // allow requests with no origin (mobile apps, curl, Postman)
+        if (!origin) return callback(null, true);
 
-    console.log('Origin de la petición:', origin);
-    if (whitelist.includes(origin)) {
-      callback(null, true);
-    } else {
-      callback(new Error('Error de CORS: origen no permitido'));
-    }
-  },
-  allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin'],
-  exposedHeaders: ['Authorization'],
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  optionsSuccessStatus: 200
+        console.log('Origin de la petición:', origin);
+        if (whitelist.includes(origin)) {
+            callback(null, true);
+        } else {
+            callback(new Error('Error de CORS: origen no permitido'));
+        }
+    },
+    allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin'],
+    exposedHeaders: ['Authorization'],
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    optionsSuccessStatus: 200
 };
 
 app.use(cors(corsOptions));
@@ -54,13 +55,14 @@ app.use("/api/requisiciones", requisicionRoutes)
 app.use('/api/notificaciones', notificacionRoutes)
 app.use('/api/categorias', categoriaRoutes)
 app.use('/api/historial-gastos', historialGastosRoutes)
+app.use('/api/historial-status', historialStatusRoutes)
 
 const PORT = process.env.PORT || 3000;
 const servidor = app.listen(PORT, () => {
-  console.log(`Servidor corriendo en el puerto ${PORT}`);
+    console.log(`Servidor corriendo en el puerto ${PORT}`);
 });
 
 app.use((err, req, res, next) => {
-  console.error("Error global:", err);
-  res.status(500).json({ error: err.message, stack: err.stack });
+    console.error("Error global:", err);
+    res.status(500).json({ error: err.message, stack: err.stack });
 });

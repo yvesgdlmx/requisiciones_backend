@@ -1,724 +1,797 @@
-import { Requisicion, Usuario, Articulo, Categoria } from "../models/Index.js";
+import { Requisicion, Usuario, Articulo, Categoria, Excedente, HistorialGasto } from "../models/Index.js";
 import NotificacionService from "../services/NotificacionService.js";
 import HistorialGastoService from "../services/HistorialGastoService.js";
+import HistorialStatusService from "../services/HistorialStatusService.js";
 import fs, { stat } from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import db from "../config/db.js";
 import cloudinary from "../config/cloudinary.js";
+import { Op } from "sequelize";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const generarFolio = (area, consecutivo) => {
-  const letraArea = area.charAt(0).toUpperCase();
-  const anioActual = new Date().getFullYear().toString().slice(-2);
-  const bloqueIzquierda = `${anioActual}`;
-  const bloqueDerecha = consecutivo.toString().padStart(5, "0");
-  return `${letraArea}${bloqueIzquierda}-${bloqueDerecha}`;
+    const letraArea = area.charAt(0).toUpperCase();
+    const anioActual = new Date().getFullYear().toString().slice(-2);
+    const bloqueIzquierda = `${anioActual}`;
+    const bloqueDerecha = consecutivo.toString().padStart(5, "0");
+    return `${letraArea}${bloqueIzquierda}-${bloqueDerecha}`;
 };
-export const crearRequisicion = async (req, res) => {
-  const t = await db.transaction();
-  try {
-    const usuario = req.usuario;
-    if (!usuario) {
-      return res.status(401).json({ msg: "No autorizado" });
-    }
-    // Extraer datos del cuerpo de la petición
-    let { objetivo, prioridad, articulos, links } = req.body;
-    // Guardar url y public_id de cada archivo
-    const archivos = req.files
-      ? req.files.map(file => ({
-          url: file.path.replace(/\\/g, "/"),
-          public_id: file.filename
-        }))
-      : [];
-    if (typeof articulos === "string") {
-      try {
-        articulos = JSON.parse(articulos);
-      } catch (error) {
-        return res.status(400).json({ msg: "El campo 'articulos' no es un JSON válido." });
-      }
-    }
-    if (typeof links === "string") {
-      try {
-        links = JSON.parse(links);
-      } catch (error) {
-        links = [];
-      }
-    }
-    if (!articulos || !Array.isArray(articulos)) {
-      return res.status(400).json({ msg: "El campo 'articulos' debe ser un arreglo." });
-    }
-    const totalRequisiciones = await Requisicion.count();
-    const consecutivo = totalRequisiciones + 1;
-    const folio = generarFolio(usuario.area, consecutivo);
-    const nuevaRequisicion = await Requisicion.create({
-      folio,
-      solicitante: usuario.id,
-      archivos, // <-- ahora es un array de objetos {url, public_id}
-      objetivo,
-      prioridad,
-      area: usuario.area,
-      links
-    }, { transaction: t });
-    for (const item of articulos) {
-      await Articulo.create({
-        cantidad: item.cantidad,
-        unidadMedida: item.unidadMedida,
-        numeroParte: item.numeroParte,
-        descripcion: item.descripcion,
-        requisicionId: nuevaRequisicion.id
-      }, { transaction: t });
-    }
-    await t.commit();
 
-    await NotificacionService.crearNotificacionRequisicionCreada(nuevaRequisicion.id, usuario);
-    
-    const requisicionConArticulos = await Requisicion.findByPk(nuevaRequisicion.id, {
-      include: [
-        { model: Usuario, as: "usuario", attributes: ["id", "nombre", "apellido", "email"] },
-        { model: Articulo, as: "articulos" }
-      ]
-    });
-    return res.status(201).json({
-      msg: "Requisición creada exitosamente",
-      requisicion: requisicionConArticulos
-    });
-  } catch (error) {
-    await t.rollback();
-    console.error("Error al crear la requisición:", error);
-    return res.status(500).json({ msg: "Error al crear la requisición" });
-  }
+const addDaysUTC = (date, days) => {
+    const d = new Date(date);
+    d.setUTCDate(d.getUTCDate() + days);
+    return d;
+};
+
+const startOfDayUTC = (date) => {
+    const d = new Date(date);
+    d.setUTCHours(0, 0, 0, 0);
+    return d;
+};
+
+const endOfDayUTC = (date) => {
+    const d = new Date(date);
+    d.setUTCHours(23, 59, 59, 999);
+    return d;
+};
+
+const isPdfFile = (file) =>
+    file?.mimetype === "application/pdf" ||
+    file?.format === "pdf" ||
+    file?.url?.match(/\.pdf($|\?)/i);
+
+const serializeUploadedFile = (file) => ({
+    url: file.path.replace(/\\/g, "/"),
+    public_id: file.filename,
+    resource_type: isPdfFile(file) ? "raw" : "image",
+    format: isPdfFile(file) ? "pdf" : file.mimetype?.split("/")[1],
+    mimetype: file.mimetype,
+    original_name: file.originalname
+});
+
+const deleteCloudinaryFile = async (file) => {
+    if (typeof file !== "object" || !file.public_id) return;
+
+    const resourceType = file.resource_type || (isPdfFile(file) ? "raw" : "image");
+    const candidatePublicIds = [file.public_id];
+
+    if (resourceType === "raw" && isPdfFile(file) && !file.public_id.endsWith(".pdf")) {
+        candidatePublicIds.push(`${file.public_id}.pdf`);
+    }
+
+    for (const publicId of candidatePublicIds) {
+        try {
+            const result = await cloudinary.uploader.destroy(publicId, {
+                resource_type: resourceType
+            });
+
+            if (result?.result === "ok" || result?.result === "not found") {
+                console.log(`Eliminado de Cloudinary: ${publicId} (${resourceType})`);
+                return;
+            }
+        } catch (err) {
+            console.error("Error eliminando archivo de Cloudinary:", publicId, err);
+        }
+    }
+};
+
+export const crearRequisicion = async (req, res) => {
+    const t = await db.transaction();
+    try {
+        const usuario = req.usuario;
+        if (!usuario) {
+            return res.status(401).json({ msg: "No autorizado" });
+        }
+        // Extraer datos del cuerpo de la petición
+        let { objetivo, prioridad, articulos, links } = req.body;
+        // Guardar url y public_id de cada archivo
+        const archivos = req.files ? req.files.map(serializeUploadedFile) : [];
+        if (typeof articulos === "string") {
+            try {
+                articulos = JSON.parse(articulos);
+            } catch (error) {
+                return res.status(400).json({ msg: "El campo 'articulos' no es un JSON válido." });
+            }
+        }
+        if (typeof links === "string") {
+            try {
+                links = JSON.parse(links);
+            } catch (error) {
+                links = [];
+            }
+        }
+        if (!articulos || !Array.isArray(articulos)) {
+            return res.status(400).json({ msg: "El campo 'articulos' debe ser un arreglo." });
+        }
+        const totalRequisiciones = await Requisicion.count();
+        const consecutivo = totalRequisiciones + 1;
+        const folio = generarFolio(usuario.area, consecutivo);
+        const nuevaRequisicion = await Requisicion.create({
+            folio,
+            solicitante: usuario.id,
+            archivos, // <-- ahora es un array de objetos {url, public_id}
+            objetivo,
+            prioridad,
+            area: usuario.area,
+            links
+        }, { transaction: t });
+        for (const item of articulos) {
+            await Articulo.create({
+                cantidad: item.cantidad,
+                unidadMedida: item.unidadMedida,
+                numeroParte: item.numeroParte,
+                descripcion: item.descripcion,
+                requisicionId: nuevaRequisicion.id
+            }, { transaction: t });
+        }
+        await t.commit();
+
+        await NotificacionService.crearNotificacionRequisicionCreada(nuevaRequisicion.id, usuario);
+
+        const requisicionConArticulos = await Requisicion.findByPk(nuevaRequisicion.id, {
+            include: [
+                { model: Usuario, as: "usuario", attributes: ["id", "nombre", "apellido", "email"] },
+                { model: Articulo, as: "articulos" }
+            ]
+        });
+        return res.status(201).json({
+            msg: "Requisición creada exitosamente",
+            requisicion: requisicionConArticulos
+        });
+    } catch (error) {
+        await t.rollback();
+        console.error("Error al crear la requisición:", error);
+        return res.status(500).json({ msg: "Error al crear la requisición" });
+    }
 };
 
 export const obtenerRequisiciones = async (req, res) => {
-  try {
-    const requisiciones = await Requisicion.findAll({
-      order: [["fechaHora", "DESC"]],
-      include: [
-        {
-          model: Usuario,
-          as: "usuario",
-          attributes: ["id", "nombre", "apellido", "email"]
-        },
-        {
-          model: Articulo,
-          as: "articulos"
-        },
-        { 
-          model: Categoria, 
-          as: "categoria", 
-          attributes: ["id", "nombre", "cantidad", "diasPeriodo", "fechaInicio", "fechaFin"]
-        }
-      ]
-    });
-    return res.json({ requisiciones });
-  } catch (error) {
-    console.error("Error al obtener requisiciones:", error);
-    return res.status(500).json({ msg: "Error al obtener requisiciones" });
-  }
+    try {
+        const requisiciones = await Requisicion.findAll({
+            order: [["fechaHora", "DESC"]],
+            include: [
+                {
+                    model: Usuario,
+                    as: "usuario",
+                    attributes: ["id", "nombre", "apellido", "email"]
+                },
+                {
+                    model: Articulo,
+                    as: "articulos"
+                },
+                {
+                    model: Categoria,
+                    as: "categoria",
+                    attributes: ["id", "nombre", "cantidad", "diasPeriodo", "fechaInicio", "fechaFin"]
+                }
+            ]
+        });
+        return res.json({ requisiciones });
+    } catch (error) {
+        console.error("Error al obtener requisiciones:", error);
+        return res.status(500).json({ msg: "Error al obtener requisiciones" });
+    }
 };
 
 export const obtenerRequisicionesAutorizacion = async (req, res) => {
-  try {
-    const requisiciones = await Requisicion.findAll({
-      where: { status: "esperando autorizacion" },
-      order: [["fechaHora", "DESC"]],
-      include: [
-        {
-          model: Usuario,
-          as: "usuario",
-          attributes: ["id", "nombre", "apellido", "email"]
-        },
-        {
-          model: Articulo,
-          as: "articulos"
-        }
-      ]
-    });
-    return res.json({ requisiciones });
-  } catch (error) {
-    console.error("Error al obtener requisiciones en autorización:", error);
-    return res.status(500).json({ msg: "Error al obtener requisiciones de autorización" });
-  }
+    try {
+        const requisiciones = await Requisicion.findAll({
+            where: { status: "esperando autorizacion" },
+            order: [["fechaHora", "DESC"]],
+            include: [
+                {
+                    model: Usuario,
+                    as: "usuario",
+                    attributes: ["id", "nombre", "apellido", "email"]
+                },
+                {
+                    model: Articulo,
+                    as: "articulos"
+                }
+            ]
+        });
+        return res.json({ requisiciones });
+    } catch (error) {
+        console.error("Error al obtener requisiciones en autorización:", error);
+        return res.status(500).json({ msg: "Error al obtener requisiciones de autorización" });
+    }
 };
 
 export const obtenerRequisicionesPorUsuario = async (req, res) => {
-  try {
-    const usuario = req.usuario;
-    if (!usuario) {
-      return res.status(401).json({ msg: "No autorizado" });
-    }
-    const requisiciones = await Requisicion.findAll({
-      where: { solicitante: usuario.id },
-      order: [["fechaHora", "DESC"]],
-      include: [
-        {
-          model: Usuario,
-          as: "usuario",
-          attributes: ["id", "nombre", "apellido", "email"]
-        },
-        {
-          model: Articulo,
-          as: "articulos"
+    try {
+        const usuario = req.usuario;
+        if (!usuario) {
+            return res.status(401).json({ msg: "No autorizado" });
         }
-      ]
-    });
-    return res.json({ requisiciones });
-  } catch (error) {
-    console.error("Error al obtener requisiciones del usuario:", error);
-    return res.status(500).json({ msg: "Error al obtener requisiciones del usuario" });
-  }
+        const requisiciones = await Requisicion.findAll({
+            where: { solicitante: usuario.id },
+            order: [["fechaHora", "DESC"]],
+            include: [
+                {
+                    model: Usuario,
+                    as: "usuario",
+                    attributes: ["id", "nombre", "apellido", "email"]
+                },
+                {
+                    model: Articulo,
+                    as: "articulos"
+                }
+            ]
+        });
+        return res.json({ requisiciones });
+    } catch (error) {
+        console.error("Error al obtener requisiciones del usuario:", error);
+        return res.status(500).json({ msg: "Error al obtener requisiciones del usuario" });
+    }
 };
 
 export const obtenerRequisicion = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const requisicion = await Requisicion.findByPk(id, {
-      include: [
-        {
-          model: Usuario,
-          as: "usuario",
-          attributes: ["id", "nombre", "apellido", "email"]
-        },
-        {
-          model: Articulo,
-          as: "articulos"
+    try {
+        const { id } = req.params;
+        const requisicion = await Requisicion.findByPk(id, {
+            include: [
+                {
+                    model: Usuario,
+                    as: "usuario",
+                    attributes: ["id", "nombre", "apellido", "email"]
+                },
+                {
+                    model: Articulo,
+                    as: "articulos"
+                }
+            ]
+        });
+        if (!requisicion) {
+            return res.status(404).json({ msg: "Requisición no encontrada" });
         }
-      ]
-    });
-    if (!requisicion) {
-      return res.status(404).json({ msg: "Requisición no encontrada" });
+        return res.json({ requisicion });
+    } catch (error) {
+        console.error("Error al obtener la requisición:", error);
+        return res.status(500).json({ msg: "Error al obtener la requisición" });
     }
-    return res.json({ requisicion });
-  } catch (error) {
-    console.error("Error al obtener la requisición:", error);
-    return res.status(500).json({ msg: "Error al obtener la requisición" });
-  }
 };
 
 export const obtenerRequisicionPorUsuario = async (req, res) => {
-  try {
-    const usuario = req.usuario;
-    const { id } = req.params;
-    if (!usuario) {
-      return res.status(401).json({ msg: "No autorizado" });
+    try {
+        const usuario = req.usuario;
+        const { id } = req.params;
+        if (!usuario) {
+            return res.status(401).json({ msg: "No autorizado" });
+        }
+        const requisicion = await Requisicion.findOne({
+            where: { id, solicitante: usuario.id },
+            include: [
+                { model: Articulo, as: "articulos" }
+            ]
+        });
+        if (!requisicion) {
+            return res.status(404).json({ msg: "Requisición no encontrada o no pertenece al usuario" });
+        }
+        return res.json({ requisicion });
+    } catch (error) {
+        console.error("Error al obtener la requisición del usuario:", error);
+        return res.status(500).json({ msg: "Error al obtener la requisición del usuario" });
     }
-    const requisicion = await Requisicion.findOne({
-      where: { id, solicitante: usuario.id },
-      include: [
-        { model: Articulo, as: "articulos" }
-      ]
-    });
-    if (!requisicion) {
-      return res.status(404).json({ msg: "Requisición no encontrada o no pertenece al usuario" });
-    }
-    return res.json({ requisicion });
-  } catch (error) {
-    console.error("Error al obtener la requisición del usuario:", error);
-    return res.status(500).json({ msg: "Error al obtener la requisición del usuario" });
-  }
 };
 
 export const actualizarRequisicion = async (req, res) => {
-  const t = await db.transaction();
-  try {
-    const usuario = req.usuario;
-    const { id } = req.params;
-    if (!usuario) {
-      return res.status(401).json({ msg: "No autorizado" });
-    }
-    const requisicion = await Requisicion.findByPk(id, {
-      include: [{ model: Articulo, as: "articulos" }]
-    });
-    if (!requisicion) {
-      return res.status(404).json({ msg: "Requisición no encontrada" });
-    }
-    if (requisicion.solicitante !== usuario.id) {
-      return res.status(403).json({ msg: "Acción no permitida. No eres el propietario." });
-    }
-    if (requisicion.status !== "creada") {
-      return res.status(403).json({ msg: "No puedes modificar la requisición porque su status ya cambió." });
-    }
-
-    const { objetivo, prioridad, status, articulos, links } = req.body;
-
-    // Archivos existentes (pueden ser objetos o strings)
-    let archivosExistentes = [];
-    if (req.body.archivosExistentes) {
-      try {
-        archivosExistentes = JSON.parse(req.body.archivosExistentes);
-      } catch (e) {
-        archivosExistentes = Array.isArray(req.body.archivosExistentes)
-          ? req.body.archivosExistentes
-          : [];
-      }
-    }
-
-    // Archivos nuevos (Cloudinary)
-    const archivosNuevos = req.files
-      ? req.files.map(file => ({
-          url: file.path.replace(/\\/g, "/"),
-          public_id: file.filename
-        }))
-      : [];
-
-    // Combinar archivos existentes y nuevos
-    const archivosFinales = [...archivosExistentes, ...archivosNuevos];
-
-    // Eliminar archivos de Cloudinary que ya no están en la lista de conservación
-    const archivosOriginales = requisicion.archivos || [];
-    const archivosEliminados = archivosOriginales.filter(
-      original => !archivosExistentes.some(
-        exist =>
-          (typeof exist === "string" && exist === original) ||
-          (typeof exist === "object" && typeof original === "object" && exist.public_id === original.public_id) ||
-          (typeof exist === "object" && typeof original === "string" && exist.url === original)
-      )
-    );
-    for (const file of archivosEliminados) {
-      if (typeof file === "object" && file.public_id) {
-        let resourceType = "image";
-        let publicId = file.public_id;
-        if (file.url && file.url.match(/\.(pdf)$/i)) {
-          resourceType = "raw";
-          if (!publicId.endsWith('.pdf')) {
-            publicId = publicId + '.pdf';
-          }
+    const t = await db.transaction();
+    try {
+        const usuario = req.usuario;
+        const { id } = req.params;
+        if (!usuario) {
+            return res.status(401).json({ msg: "No autorizado" });
         }
-        try {
-          await cloudinary.uploader.destroy(publicId, { resource_type: resourceType });
-          console.log(`Eliminado de Cloudinary: ${publicId} (${resourceType})`);
-        } catch (err) {
-          console.error("Error eliminando archivo de Cloudinary:", publicId, err);
+        const requisicion = await Requisicion.findByPk(id, {
+            include: [{ model: Articulo, as: "articulos" }]
+        });
+        if (!requisicion) {
+            return res.status(404).json({ msg: "Requisición no encontrada" });
         }
-      }
-    }
-
-    // Actualizar campos de la cabecera
-    requisicion.objetivo = (objetivo !== undefined) ? objetivo : requisicion.objetivo;
-    requisicion.prioridad = (prioridad !== undefined) ? prioridad : requisicion.prioridad;
-    requisicion.status = (status !== undefined) ? status : requisicion.status;
-    requisicion.archivos = archivosFinales;
-
-    // Manejar links
-    let parsedLinks = requisicion.links || [];
-    if (links !== undefined) {
-      if (typeof links === "string") {
-        try {
-          parsedLinks = JSON.parse(links);
-        } catch (e) {
-          parsedLinks = [];
+        if (requisicion.solicitante !== usuario.id) {
+            return res.status(403).json({ msg: "Acción no permitida. No eres el propietario." });
         }
-      } else if (Array.isArray(links)) {
-        parsedLinks = links;
-      }
-      requisicion.links = parsedLinks;
-    }
+        if (requisicion.status !== "creada") {
+            return res.status(403).json({ msg: "No puedes modificar la requisición porque su status ya cambió." });
+        }
 
-    await requisicion.save({ transaction: t });
+        const { objetivo, prioridad, status, articulos, links } = req.body;
 
-    // Procesar artículos
-    let parsedArticulos = [];
-    if (articulos) {
-      try {
-        parsedArticulos = JSON.parse(articulos);
-      } catch (e) {
-        parsedArticulos = Array.isArray(articulos) ? articulos : [];
-      }
-    }
-    if (parsedArticulos.length > 0) {
-      await Articulo.destroy({
-        where: { requisicionId: requisicion.id },
-        transaction: t
-      });
-      for (const item of parsedArticulos) {
-        await Articulo.create({
-          cantidad: item.cantidad,
-          unidadMedida: item.unidadMedida,
-          numeroParte: item.numeroParte,
-          descripcion: item.descripcion,
-          requisicionId: requisicion.id
-        }, { transaction: t });
-      }
-    }
-    await t.commit();
-    const requisicionActualizada = await Requisicion.findByPk(requisicion.id, {
-      include: [{ model: Articulo, as: "articulos" }]
-    });
+        // Archivos existentes (pueden ser objetos o strings)
+        let archivosExistentes = [];
+        if (req.body.archivosExistentes) {
+            try {
+                archivosExistentes = JSON.parse(req.body.archivosExistentes);
+            } catch (e) {
+                archivosExistentes = Array.isArray(req.body.archivosExistentes)
+                    ? req.body.archivosExistentes
+                    : [];
+            }
+        }
 
-    // Crear o actualizar historial de gasto si hay categoría y monto
-    if (requisicionActualizada.categoriaId && requisicionActualizada.monto) {
-      await HistorialGastoService.crearOActualizarHistorial(
-        requisicionActualizada,
-        `${usuario.nombre} ${usuario.apellido}`
-      );
-    }
+        // Archivos nuevos (Cloudinary)
+        const archivosNuevos = req.files ? req.files.map(serializeUploadedFile) : [];
 
-    return res.json({ msg: "Requisición actualizada", requisicion: requisicionActualizada });
-  } catch (error) {
-    await t.rollback();
-    console.error("Error al actualizar la requisición:", error);
-    return res.status(500).json({ msg: "Error al actualizar la requisición" });
-  }
+        // Combinar archivos existentes y nuevos
+        const archivosFinales = [...archivosExistentes, ...archivosNuevos];
+
+        // Eliminar archivos de Cloudinary que ya no están en la lista de conservación
+        const archivosOriginales = requisicion.archivos || [];
+        const archivosEliminados = archivosOriginales.filter(
+            original => !archivosExistentes.some(
+                exist =>
+                    (typeof exist === "string" && exist === original) ||
+                    (typeof exist === "object" && typeof original === "object" && exist.public_id === original.public_id) ||
+                    (typeof exist === "object" && typeof original === "string" && exist.url === original)
+            )
+        );
+        for (const file of archivosEliminados) {
+            await deleteCloudinaryFile(file);
+        }
+
+        // Actualizar campos de la cabecera
+        requisicion.objetivo = (objetivo !== undefined) ? objetivo : requisicion.objetivo;
+        requisicion.prioridad = (prioridad !== undefined) ? prioridad : requisicion.prioridad;
+        requisicion.status = (status !== undefined) ? status : requisicion.status;
+        requisicion.archivos = archivosFinales;
+
+        // Manejar links
+        let parsedLinks = requisicion.links || [];
+        if (links !== undefined) {
+            if (typeof links === "string") {
+                try {
+                    parsedLinks = JSON.parse(links);
+                } catch (e) {
+                    parsedLinks = [];
+                }
+            } else if (Array.isArray(links)) {
+                parsedLinks = links;
+            }
+            requisicion.links = parsedLinks;
+        }
+
+        await requisicion.save({ transaction: t });
+
+        // Procesar artículos
+        let parsedArticulos = [];
+        if (articulos) {
+            try {
+                parsedArticulos = JSON.parse(articulos);
+            } catch (e) {
+                parsedArticulos = Array.isArray(articulos) ? articulos : [];
+            }
+        }
+        if (parsedArticulos.length > 0) {
+            await Articulo.destroy({
+                where: { requisicionId: requisicion.id },
+                transaction: t
+            });
+            for (const item of parsedArticulos) {
+                await Articulo.create({
+                    cantidad: item.cantidad,
+                    unidadMedida: item.unidadMedida,
+                    numeroParte: item.numeroParte,
+                    descripcion: item.descripcion,
+                    requisicionId: requisicion.id
+                }, { transaction: t });
+            }
+        }
+        await t.commit();
+        const requisicionActualizada = await Requisicion.findByPk(requisicion.id, {
+            include: [{ model: Articulo, as: "articulos" }]
+        });
+
+        // Crear o actualizar historial de gasto si hay categoría y monto
+        if (requisicionActualizada.categoriaId && requisicionActualizada.monto) {
+            await HistorialGastoService.crearOActualizarHistorial(
+                requisicionActualizada,
+                `${usuario.nombre} ${usuario.apellido}`
+            );
+        }
+
+        return res.json({ msg: "Requisición actualizada", requisicion: requisicionActualizada });
+    } catch (error) {
+        await t.rollback();
+        console.error("Error al actualizar la requisición:", error);
+        return res.status(500).json({ msg: "Error al actualizar la requisición" });
+    }
 };
 
 
 export const actualizarRequisicionAdmin = async (req, res) => {
-  try {
-    const usuario = req.usuario;
-    const { id } = req.params;
-    if (!usuario) {
-      return res.status(401).json({ msg: "No autorizado" });
-    }
-    // Solo admin o superadmin pueden acceder
-    if (!(usuario.rol === "admin" || usuario.rol === "superadmin")) {
-      return res.status(403).json({ msg: "Acción no permitida. Solo admin o superAdmin pueden usar este endpoint." });
-    }
-    let requisicion = await Requisicion.findByPk(id);
-    if (!requisicion) {
-      return res.status(404).json({ msg: "Requisición no encontrada" });
-    }
-    const { status, prioridad, comentario, numeroOrdenCompra, proveedor, tipoCompra, monto, eta, archivosExistentes, categoriaGasto, categoriaId } = req.body;
-
-    // Guardar status anterior para notificaciones
-    const statusAnterior = requisicion.status;
-    const comentarioAnterior = requisicion.comentario;
-    const etaAnterior = requisicion.eta ? new Date(requisicion.eta).toISOString() : null;
-
-    // Si se intenta actualizar el status y el rol es superadmin, se rechaza la acción
-    if (status !== undefined && usuario.rol === "superadmin") {
-      return res.status(403).json({ msg: "No tienes los permisos para actualizar una requisición" });
-    }
-    if (status !== undefined) {
-      requisicion.status = status;
-      requisicion.comprador = `${usuario.nombre} ${usuario.apellido}`;
-      requisicion.fechaCambioStatus = new Date();
-    }
-    if (prioridad !== undefined) {
-      requisicion.prioridad = prioridad;
-    }
-    if (comentario !== undefined) {
-      requisicion.comentario = comentario;
-    }
-    if (numeroOrdenCompra !== undefined) {
-      requisicion.numeroOrdenCompra = numeroOrdenCompra;
-    }
-    if (proveedor !== undefined) {
-      requisicion.proveedor = proveedor;
-    }
-    if (tipoCompra !== undefined) {
-      if (tipoCompra === "" || tipoCompra === "null") {
-        requisicion.tipoCompra = null;
-      } else {
-        requisicion.tipoCompra = tipoCompra;
-      }
-    }
-
-    // CAMBIO: Validar moneda del monto con la categoría antes de asignar
-    if (monto !== undefined) {
-      const parseMonto = (m) => {
-        if (!m) return { cantidad: null, moneda: null };
-        const [rawCant, mon] = String(m).trim().split(" ");
-        const cant = parseFloat((rawCant || "").replace(/[$,]/g, ""));
-        return { cantidad: Number.isNaN(cant) ? null : cant, moneda: mon || null };
-      };
-
-      const { moneda: monedaMonto } = parseMonto(monto);
-
-      // Determinar categoría para validar moneda
-      let catIdAValidar = null;
-      if (categoriaId !== undefined) {
-        catIdAValidar = (categoriaId === "" || categoriaId === "null") ? null : Number(categoriaId);
-      } else if (categoriaGasto !== undefined && categoriaGasto !== "" && categoriaGasto !== "null") {
-        const nombre = String(categoriaGasto).trim().toLowerCase();
-        let cat = await Categoria.findOne({ where: { nombre } });
-        if (!cat) {
-          cat = await Categoria.create({
-            nombre,
-            cantidad: 0,
-            diasPeriodo: 30,
-            // CAMBIO: agregar moneda por defecto al crear categoría
-            moneda: "MXN",
-            fechaInicio: new Date(),
-            fechaFin: null
-          });
+    try {
+        const usuario = req.usuario;
+        const { id } = req.params;
+        if (!usuario) {
+            return res.status(401).json({ msg: "No autorizado" });
         }
-        catIdAValidar = cat.id;
-      } else {
-        catIdAValidar = requisicion.categoriaId;
-      }
-
-      // CAMBIO: Validar que moneda del monto coincida con moneda de la categoría
-      if (catIdAValidar && monedaMonto) {
-        const categoria = await Categoria.findByPk(catIdAValidar);
-        if (categoria && categoria.moneda && categoria.moneda !== monedaMonto) {
-          return res.status(400).json({
-            msg: `La moneda del monto (${monedaMonto}) no coincide con la moneda de la categoría (${categoria.moneda}). La categoría "${categoria.nombre}" usa ${categoria.moneda}.`
-          });
+        // Solo admin o superadmin pueden acceder
+        if (!(usuario.rol === "admin" || usuario.rol === "superadmin")) {
+            return res.status(403).json({ msg: "Acción no permitida. Solo admin o superAdmin pueden usar este endpoint." });
         }
-      }
-
-      requisicion.monto = monto;
-    }
-    
-    // Manejo de categoría: preferir categoriaId; si no hay, resolver por nombre (categoriaGasto)
-    if (categoriaId !== undefined) {
-      requisicion.categoriaId = (categoriaId === "" || categoriaId === "null") ? null : Number(categoriaId);
-      requisicion.categoriaGasto = null; // limpiar el campo antiguo
-    } else if (categoriaGasto !== undefined) {
-      if (categoriaGasto === "" || categoriaGasto === "null") {
-        requisicion.categoriaId = null;
-        requisicion.categoriaGasto = null;
-      } else {
-        // Buscar o crear categoría por nombre
-        const nombre = String(categoriaGasto).trim().toLowerCase();
-        let cat = await Categoria.findOne({ where: { nombre } });
-        if (!cat) {
-          // CAMBIO: agregar moneda por defecto al crear categoría
-          cat = await Categoria.create({
-            nombre,
-            cantidad: 0,
-            diasPeriodo: 30,
-            moneda: "MXN",
-            fechaInicio: new Date(),
-            fechaFin: null
-          });
+        let requisicion = await Requisicion.findByPk(id);
+        if (!requisicion) {
+            return res.status(404).json({ msg: "Requisición no encontrada" });
         }
-        requisicion.categoriaId = cat.id;
-        requisicion.categoriaGasto = categoriaGasto; // mantener por compatibilidad
-      }
-    }
-    
-    if (eta !== undefined) {
-      if (eta === "" || eta === "null") {
-        requisicion.eta = null;
-      } else {
-        // SOLUCIÓN: Forzar interpretación UTC para que funcione igual en local y producción
-        const fechaEta = new Date(eta + 'T12:00:00.000Z');
-        requisicion.eta = fechaEta;
-      }
-    }
+        const { status, prioridad, comentario, numeroOrdenCompra, cotizacion, numeroGuia, numeroOrdenVenta, factura, proveedor, tipoCompra, monto, eta, archivosExistentes, categoriaGasto, categoriaId } = req.body;
 
-    let archivosFinales = [];
-    
-    if (archivosExistentes) {
-      try {
-        const archivosParseados = JSON.parse(archivosExistentes);
-        archivosFinales = Array.isArray(archivosParseados) ? archivosParseados : [];
-      } catch (e) {
-        archivosFinales = [];
-      }
-    }
+        // Guardar status anterior para notificaciones
+        const statusAnterior = requisicion.status;
+        const comentarioAnterior = requisicion.comentario;
+        const etaAnterior = requisicion.eta ? new Date(requisicion.eta).toISOString() : null;
 
-    // Identificar archivos a eliminar de Cloudinary
-    const archivosOriginales = requisicion.archivos || [];
-    const archivosAEliminar = archivosOriginales.filter(
-      original => !archivosFinales.some(
-        conservado =>
-          (typeof conservado === "string" && conservado === original) ||
-          (typeof conservado === "object" && typeof original === "object" && conservado.public_id === original.public_id) ||
-          (typeof conservado === "object" && typeof original === "string" && conservado.url === original)
-      )
-    );
-
-    // Eliminar archivos de Cloudinary
-    for (const file of archivosAEliminar) {
-      if (typeof file === "object" && file.public_id) {
-        let resourceType = "image";
-        let publicId = file.public_id;
-        if (file.url && file.url.match(/\.(pdf)$/i)) {
-          resourceType = "raw";
-          if (!publicId.endsWith('.pdf')) {
-            publicId = publicId + '.pdf';
-          }
+        // Si se intenta actualizar el status y el rol es superadmin, se rechaza la acción
+        if (status !== undefined && usuario.rol === "superadmin") {
+            return res.status(403).json({ msg: "No tienes los permisos para actualizar una requisición" });
         }
-        try {
-          await cloudinary.uploader.destroy(publicId, { resource_type: resourceType });
-          console.log(`Eliminado de Cloudinary: ${publicId} (${resourceType})`);
-        } catch (err) {
-          console.error("Error eliminando archivo de Cloudinary:", publicId, err);
+        if (status !== undefined) {
+            requisicion.status = status;
+            requisicion.comprador = `${usuario.nombre} ${usuario.apellido}`;
+            requisicion.fechaCambioStatus = new Date();
         }
-      }
+        if (prioridad !== undefined) {
+            requisicion.prioridad = prioridad;
+        }
+        if (comentario !== undefined) {
+            requisicion.comentario = comentario;
+        }
+        if (numeroOrdenCompra !== undefined) {
+            requisicion.numeroOrdenCompra = numeroOrdenCompra;
+        }
+
+        const compraInternacional = tipoCompra === "internacional";
+
+        if (compraInternacional) {
+            if (cotizacion !== undefined) {
+                requisicion.cotizacion = cotizacion;
+            }
+            if (numeroGuia !== undefined) {
+                requisicion.numeroGuia = numeroGuia;
+            }
+            if (numeroOrdenVenta !== undefined) {
+                requisicion.numeroOrdenVenta = numeroOrdenVenta;
+            }
+            if (factura !== undefined) {
+                requisicion.factura = factura;
+            }
+        } else if (tipoCompra !== undefined) {
+            requisicion.cotizacion = null;
+            requisicion.numeroGuia = null;
+            requisicion.numeroOrdenCompra = null;
+            requisicion.numeroOrdenVenta = null;
+            requisicion.factura = null;
+        }
+
+        if (proveedor !== undefined) {
+            requisicion.proveedor = proveedor;
+        }
+        if (tipoCompra !== undefined) {
+            if (tipoCompra === "" || tipoCompra === "null") {
+                requisicion.tipoCompra = null;
+            } else {
+                requisicion.tipoCompra = tipoCompra;
+            }
+        }
+
+        // CAMBIO: Validar moneda del monto con la categoría antes de asignar
+        if (monto !== undefined) {
+            const parseMonto = (m) => {
+                if (!m) return { cantidad: null, moneda: null };
+                const [rawCant, mon] = String(m).trim().split(" ");
+                const cant = parseFloat((rawCant || "").replace(/[$,]/g, ""));
+                return { cantidad: Number.isNaN(cant) ? null : cant, moneda: mon || null };
+            };
+
+            const { cantidad: montoCantidad, moneda: monedaMonto } = parseMonto(monto);
+
+            // Determinar categoría para validar moneda
+            let catIdAValidar = null;
+            if (categoriaId !== undefined) {
+                catIdAValidar = (categoriaId === "" || categoriaId === "null") ? null : Number(categoriaId);
+            } else if (categoriaGasto !== undefined && categoriaGasto !== "" && categoriaGasto !== "null") {
+                const nombre = String(categoriaGasto).trim().toLowerCase();
+                let cat = await Categoria.findOne({ where: { nombre } });
+                if (!cat) {
+                    cat = await Categoria.create({
+                        nombre,
+                        cantidad: 0,
+                        diasPeriodo: 30,
+                        moneda: "MXN",
+                        fechaInicio: new Date(),
+                        fechaFin: null
+                    });
+                }
+                catIdAValidar = cat.id;
+            } else {
+                catIdAValidar = requisicion.categoriaId;
+            }
+
+            // CAMBIO: Validar que moneda del monto coincida con moneda de la categoría
+            if (catIdAValidar && monedaMonto) {
+                const categoria = await Categoria.findByPk(catIdAValidar);
+                if (categoria && categoria.moneda && categoria.moneda !== monedaMonto) {
+                    return res.status(400).json({
+                        msg: `La moneda del monto (${monedaMonto}) no coincide con la moneda de la categoría (${categoria.moneda}). La categoría "${categoria.nombre}" usa ${categoria.moneda}.`
+                    });
+                }
+            }
+
+            // NUEVA LÓGICA: Validar presupuesto y registrar excedentes
+            // ✅ SOLO si el status es "aprobada" o "autorizada"
+            if (montoCantidad !== null && catIdAValidar && (status === "aprobada" || status === "autorizada")) {
+                const categoria = await Categoria.findByPk(catIdAValidar);
+
+                if (categoria) {
+                    // Obtener gasto actual de la categoría en el período actual
+                    const gastoActual = await HistorialGasto.sum("montoGastado", {
+                        where: {
+                            categoriaId: catIdAValidar,
+                            fechaGasto: {
+                                [Op.gte]: categoria.fechaInicio,
+                                [Op.lte]: categoria.fechaFin || new Date()
+                            }
+                        }
+                    }) || 0;
+
+                    const presupuestoDisponible = categoria.cantidad - gastoActual;
+
+                    // Si el monto excede el presupuesto disponible
+                    if (montoCantidad > presupuestoDisponible) {
+                        const montoExcedente = montoCantidad - presupuestoDisponible;
+
+                        const diasPeriodo = Number(categoria.diasPeriodo || 30);
+
+                        // USAR fechaFin de la categoría como base
+                        const periodoFin = new Date(categoria.fechaFin);
+
+                        // Inicio del excedente: día siguiente a fechaFin 00:00:00
+                        const excedenteInicio = startOfDayUTC(addDaysUTC(periodoFin, 1));
+
+                        // Fin del excedente: diasPeriodo después con hora 23:59:59
+                        const excedenteFin = endOfDayUTC(addDaysUTC(excedenteInicio, diasPeriodo - 1));
+
+                        await Excedente.create({
+                            categoriaId: catIdAValidar,
+                            excedente: montoExcedente,
+                            moneda: categoria.moneda,
+                            fecha_inicio: excedenteInicio,
+                            fecha_fin: excedenteFin
+                        });
+
+                        console.log(`Excedente registrado: ${montoExcedente} ${categoria.moneda} en categoría ${categoria.nombre}`);
+                        console.log(`Período excedente: ${excedenteInicio.toISOString()} - ${excedenteFin.toISOString()}`);
+                    }
+                }
+            }
+
+            requisicion.monto = monto;
+        }
+
+        // Manejo de categoría: preferir categoriaId; si no hay, resolver por nombre (categoriaGasto)
+        if (categoriaId !== undefined) {
+            requisicion.categoriaId = (categoriaId === "" || categoriaId === "null") ? null : Number(categoriaId);
+            requisicion.categoriaGasto = null; // limpiar el campo antiguo
+        } else if (categoriaGasto !== undefined) {
+            if (categoriaGasto === "" || categoriaGasto === "null") {
+                requisicion.categoriaId = null;
+                requisicion.categoriaGasto = null;
+            } else {
+                // Buscar o crear categoría por nombre
+                const nombre = String(categoriaGasto).trim().toLowerCase();
+                let cat = await Categoria.findOne({ where: { nombre } });
+                if (!cat) {
+                    cat = await Categoria.create({
+                        nombre,
+                        cantidad: 0,
+                        diasPeriodo: 30,
+                        moneda: "MXN",
+                        fechaInicio: new Date(),
+                        fechaFin: null
+                    });
+                }
+                requisicion.categoriaId = cat.id;
+                requisicion.categoriaGasto = categoriaGasto; // mantener por compatibilidad
+            }
+        }
+
+        if (eta !== undefined) {
+            if (eta === "" || eta === "null") {
+                requisicion.eta = null;
+            } else {
+                const fechaEta = new Date(eta + 'T12:00:00.000Z');
+                requisicion.eta = fechaEta;
+            }
+        }
+
+        let archivosFinales = [];
+
+        if (archivosExistentes) {
+            try {
+                const archivosParseados = JSON.parse(archivosExistentes);
+                archivosFinales = Array.isArray(archivosParseados) ? archivosParseados : [];
+            } catch (e) {
+                archivosFinales = [];
+            }
+        }
+
+        // Identificar archivos a eliminar de Cloudinary
+        const archivosOriginales = requisicion.archivos || [];
+        const archivosAEliminar = archivosOriginales.filter(
+            original => !archivosFinales.some(
+                conservado =>
+                    (typeof conservado === "string" && conservado === original) ||
+                    (typeof conservado === "object" && typeof original === "object" && conservado.public_id === original.public_id) ||
+                    (typeof conservado === "object" && typeof original === "string" && conservado.url === original)
+            )
+        );
+
+        // Eliminar archivos de Cloudinary
+        for (const file of archivosAEliminar) {
+            await deleteCloudinaryFile(file);
+        }
+
+        // Agregar nuevos archivos subidos
+        if (req.files && req.files.length > 0) {
+            const nuevosArchivos = req.files.map(serializeUploadedFile);
+            archivosFinales = [...archivosFinales, ...nuevosArchivos];
+        }
+
+        // Actualizar la requisición con los archivos finales
+        requisicion.archivos = archivosFinales;
+
+        await requisicion.save();
+
+        // Generar notificaciones si hubo cambios relevantes
+        if (status !== undefined && status !== statusAnterior) {
+            await HistorialStatusService.registrarCambioStatus({ requisicionId: requisicion.id, statusAnterior, statusNuevo: status, usuario, comentario })
+            await NotificacionService.crearNotificacionCambioStatus(requisicion.id, statusAnterior, status, `${usuario.nombre} ${usuario.apellido}`);
+        }
+        // Notificación por comentario agregado
+        if (comentario !== undefined && comentario !== comentarioAnterior && comentario !== null && comentario !== "") {
+            await NotificacionService.crearNotificacionComentario(requisicion.id, "comentario");
+        }
+        // Notificación por cambio de ETA
+        const nuevoEtaISO = requisicion.eta ? new Date(requisicion.eta).toISOString() : null;
+        if (eta !== undefined && nuevoEtaISO !== etaAnterior && nuevoEtaISO !== null) {
+            await NotificacionService.crearNotificacionEta(requisicion.id, nuevoEtaISO, proveedor);
+        }
+
+        // Consulta la requisición actualizada incluyendo datos del usuario, artículos y categoría
+        requisicion = await Requisicion.findByPk(id, {
+            include: [
+                { model: Usuario, as: "usuario", attributes: ["id", "nombre", "apellido", "email"] },
+                { model: Articulo, as: "articulos" },
+                { model: Categoria, as: "categoria", attributes: ["id", "nombre", "cantidad", "diasPeriodo", "fechaInicio", "fechaFin", "moneda"] }
+            ]
+        });
+
+        // Crear o actualizar historial de gasto
+        await HistorialGastoService.crearOActualizarHistorial(
+            requisicion,
+            `${usuario.nombre} ${usuario.apellido}`
+        );
+
+        return res.json({ msg: "Requisición actualizada (admin)", requisicion });
+    } catch (error) {
+        console.error("Error al actualizar la requisición (admin):", error);
+        return res.status(500).json({ msg: "Error al actualizar la requisición" });
     }
-
-    // Agregar nuevos archivos subidos
-    if (req.files && req.files.length > 0) {
-      const nuevosArchivos = req.files.map(file => ({
-        url: file.path.replace(/\\/g, "/"),
-        public_id: file.filename
-      }));
-      archivosFinales = [...archivosFinales, ...nuevosArchivos];
-    }
-
-    // Actualizar la requisición con los archivos finales
-    requisicion.archivos = archivosFinales;
-
-    await requisicion.save();
-
-    // Generar notificaciones si hubo cambios relevantes
-    if(status !== undefined && status !== statusAnterior) {
-      await NotificacionService.crearNotificacionCambioStatus(requisicion.id, statusAnterior, status, `${usuario.nombre} ${usuario.apellido}`);
-    }
-    // Notificación por comentario agregado
-    if(comentario !== undefined && comentario !== comentarioAnterior && comentario !== null && comentario !== "") {
-      await NotificacionService.crearNotificacionComentario(requisicion.id, "comentario"); 
-    }
-    // Notificación por cambio de ETA
-    const nuevoEtaISO = requisicion.eta ? new Date(requisicion.eta).toISOString() : null;
-    if(eta !== undefined && nuevoEtaISO !== etaAnterior && nuevoEtaISO !== null) {
-      await NotificacionService.crearNotificacionEta(requisicion.id, nuevoEtaISO, proveedor);
-    }
-
-    // Consulta la requisición actualizada incluyendo datos del usuario, artículos y categoría
-    requisicion = await Requisicion.findByPk(id, {
-      include: [
-        { model: Usuario, as: "usuario", attributes: ["id", "nombre", "apellido", "email"] },
-        { model: Articulo, as: "articulos" },
-        // CAMBIO: incluir moneda en la respuesta
-        { model: Categoria, as: "categoria", attributes: ["id", "nombre", "cantidad", "diasPeriodo", "fechaInicio", "fechaFin", "moneda"] }
-      ]
-    });
-
-    // Crear o actualizar historial de gasto (el service maneja todo internamente)
-    await HistorialGastoService.crearOActualizarHistorial(
-      requisicion,
-      `${usuario.nombre} ${usuario.apellido}`
-    );
-
-    return res.json({ msg: "Requisición actualizada (admin)", requisicion });
-  } catch (error) {
-    console.error("Error al actualizar la requisición (admin):", error);
-    return res.status(500).json({ msg: "Error al actualizar la requisición" });
-  }
 };
 
 export const actualizarRequisicionSuperAdmin = async (req, res) => {
-  try {
-    const usuario = req.usuario;
-    const { id } = req.params;
-    
-    // Verificar autorización
-    if (!usuario) {
-      return res.status(401).json({ msg: "No autorizado" });
-    }
-    if (usuario.rol !== "superadmin") {
-      return res.status(403).json({ msg: "Acción no permitida. Solo superadmin puede usar este endpoint." });
-    }
-    // Buscar la requisición
-    let requisicion = await Requisicion.findByPk(id);
-    if (!requisicion) {
-      return res.status(404).json({ msg: "Requisición no encontrada" });
-    }
-    
-    // Actualizar status y comentario del autorizador
-    const { status, comentarioAutorizador } = req.body;
+    try {
+        const usuario = req.usuario;
+        const { id } = req.params;
 
-    const comentarioAutorizadorAnterior = requisicion.comentarioAutorizador;
-    const statusAnterior = requisicion.status;
-    
-    if (status !== undefined) {
-      requisicion.status = status;
-      requisicion.fechaCambioStatus = new Date();
-    }
-    
-    // NUEVO: Actualizar comentario del autorizador
-    if (comentarioAutorizador !== undefined) {
-      requisicion.comentarioAutorizador = comentarioAutorizador;
-    }
-    
-    await requisicion.save();
+        // Verificar autorización
+        if (!usuario) {
+            return res.status(401).json({ msg: "No autorizado" });
+        }
+        if (usuario.rol !== "superadmin") {
+            return res.status(403).json({ msg: "Acción no permitida. Solo superadmin puede usar este endpoint." });
+        }
+        // Buscar la requisición
+        let requisicion = await Requisicion.findByPk(id);
+        if (!requisicion) {
+            return res.status(404).json({ msg: "Requisición no encontrada" });
+        }
 
-    //Gnerar notificaciones si hubo cambios relevantes
-    if(status !== undefined && status !== statusAnterior) {
-      await NotificacionService.crearNotificacionCambioStatus(requisicion.id, statusAnterior, status, "Autorizador");
-    }
+        // Actualizar status y comentario del autorizador
+        const { status, comentarioAutorizador } = req.body;
 
-    if(comentarioAutorizador !== undefined && comentarioAutorizador !== comentarioAutorizadorAnterior && comentarioAutorizador !== null && comentarioAutorizador !== "") {
-      await NotificacionService.crearNotificacionComentario(requisicion.id, "comentario_autorizador");
+        const comentarioAutorizadorAnterior = requisicion.comentarioAutorizador;
+        const statusAnterior = requisicion.status;
+
+        if (status !== undefined) {
+            requisicion.status = status;
+            requisicion.fechaCambioStatus = new Date();
+        }
+
+        // NUEVO: Actualizar comentario del autorizador
+        if (comentarioAutorizador !== undefined) {
+            requisicion.comentarioAutorizador = comentarioAutorizador;
+        }
+
+        await requisicion.save();
+
+        //Gnerar notificaciones si hubo cambios relevantes
+        if (status !== undefined && status !== statusAnterior) {
+            await HistorialStatusService.registrarCambioStatus({ requisicionId: requisicion.id, statusAnterior, statusNuevo: status, usuario, comentario: comentarioAutorizador })
+            await NotificacionService.crearNotificacionCambioStatus(requisicion.id, statusAnterior, status, "Autorizador");
+        }
+
+        if (comentarioAutorizador !== undefined && comentarioAutorizador !== comentarioAutorizadorAnterior && comentarioAutorizador !== null && comentarioAutorizador !== "") {
+            await NotificacionService.crearNotificacionComentario(requisicion.id, "comentario_autorizador");
+        }
+
+        // Obtener la requisición actualizada con sus relaciones
+        requisicion = await Requisicion.findByPk(id, {
+            include: [
+                { model: Usuario, as: "usuario", attributes: ["id", "nombre", "apellido", "email"] },
+                { model: Articulo, as: "articulos" }
+            ]
+        });
+        return res.json({
+            msg: "Requisición actualizada (superadmin)",
+            requisicion
+        });
+    } catch (error) {
+        console.error("Error al actualizar la requisición (superadmin):", error);
+        return res.status(500).json({ msg: "Error al actualizar la requisición" });
     }
-    
-    // Obtener la requisición actualizada con sus relaciones
-    requisicion = await Requisicion.findByPk(id, {
-      include: [
-        { model: Usuario, as: "usuario", attributes: ["id", "nombre", "apellido", "email"] },
-        { model: Articulo, as: "articulos" }
-      ]
-    });
-    return res.json({ 
-      msg: "Requisición actualizada (superadmin)", 
-      requisicion 
-    });
-  } catch (error) {
-    console.error("Error al actualizar la requisición (superadmin):", error);
-    return res.status(500).json({ msg: "Error al actualizar la requisición" });
-  }
 };
 
 export const eliminarRequisicion = async (req, res) => {
-  try {
-    const usuario = req.usuario;
-    const { id } = req.params;
-    if (!usuario) {
-      return res.status(401).json({ msg: "No autorizado" });
-    }
-    const requisicion = await Requisicion.findByPk(id);
-    if (!requisicion) {
-      return res.status(404).json({ msg: "Requisición no encontrada" });
-    }
-    // Verificar que el usuario propietario sea quien intente eliminarla
-    if (requisicion.solicitante !== usuario.id) {
-      return res.status(403).json({ msg: "Acción no permitida. No eres el propietario." });
-    }
-
-    // Eliminar archivos de Cloudinary asociados a la requisición
-    if (requisicion.archivos && Array.isArray(requisicion.archivos)) {
-      for (const file of requisicion.archivos) {
-        if (typeof file === "object" && file.public_id) {
-          let resourceType = "image";
-          let publicId = file.public_id;
-          if (file.url && file.url.match(/\.(pdf)$/i)) {
-            resourceType = "raw";
-            if (!publicId.endsWith('.pdf')) {
-              publicId = publicId + '.pdf';
-            }
-          }
-          try {
-            await cloudinary.uploader.destroy(publicId, { resource_type: resourceType });
-            console.log(`Eliminado de Cloudinary: ${publicId} (${resourceType})`);
-          } catch (err) {
-            console.error("Error eliminando archivo de Cloudinary:", publicId, err);
-          }
+    try {
+        const usuario = req.usuario;
+        const { id } = req.params;
+        if (!usuario) {
+            return res.status(401).json({ msg: "No autorizado" });
         }
-      }
-    }
+        const requisicion = await Requisicion.findByPk(id);
+        if (!requisicion) {
+            return res.status(404).json({ msg: "Requisición no encontrada" });
+        }
+        // Verificar que el usuario propietario sea quien intente eliminarla
+        if (requisicion.solicitante !== usuario.id) {
+            return res.status(403).json({ msg: "Acción no permitida. No eres el propietario." });
+        }
 
-    // Eliminar los artículos asociados a la requisición
-    await Articulo.destroy({ where: { requisicionId: requisicion.id } });
-    // Eliminar la requisición
-    await requisicion.destroy();
-    return res.json({ msg: "Requisición eliminada" });
-  } catch (error) {
-    console.error("Error al eliminar la requisición:", error);
-    return res.status(500).json({ msg: "Error al eliminar la requisición" });
-  }
+        // Eliminar archivos de Cloudinary asociados a la requisición
+        if (requisicion.archivos && Array.isArray(requisicion.archivos)) {
+            for (const file of requisicion.archivos) {
+                await deleteCloudinaryFile(file);
+            }
+        }
+
+        // Eliminar los artículos asociados a la requisición
+        await Articulo.destroy({ where: { requisicionId: requisicion.id } });
+        // Eliminar la requisición
+        await requisicion.destroy();
+        return res.json({ msg: "Requisición eliminada" });
+    } catch (error) {
+        console.error("Error al eliminar la requisición:", error);
+        return res.status(500).json({ msg: "Error al eliminar la requisición" });
+    }
 };
 
 export const marcarRequisicionComoVisto = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const requisicion = await Requisicion.findByPk(id);
-    if (!requisicion) {
-      return res.status(404).json({ msg: "Requisición no encontrada" });
+    try {
+        const { id } = req.params;
+        const requisicion = await Requisicion.findByPk(id);
+        if (!requisicion) {
+            return res.status(404).json({ msg: "Requisición no encontrada" });
+        }
+        // Si aún no fue marcada como abierta, o si el status ya no es "creada", actualizamos el campo.
+        if (requisicion.status !== "creada") {
+            requisicion.abierto = true;
+            await requisicion.save();
+        }
+        return res.json({ msg: "Requisición marcada como vista", requisicion });
+    } catch (error) {
+        console.error("Error al marcar la requisición como vista:", error);
+        return res.status(500).json({ msg: "Error al marcar la requisición como vista" });
     }
-    // Si aún no fue marcada como abierta, o si el status ya no es "creada", actualizamos el campo.
-    if (requisicion.status !== "creada") {
-      requisicion.abierto = true;
-      await requisicion.save();
-    }
-    return res.json({ msg: "Requisición marcada como vista", requisicion });
-  } catch (error) {
-    console.error("Error al marcar la requisición como vista:", error);
-    return res.status(500).json({ msg: "Error al marcar la requisición como vista" });
-  }
 };

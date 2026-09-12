@@ -129,6 +129,26 @@ const Requisicion = db.define(
         model: "categorias",
         key: "id"
       }
+    },
+    cotizacion: {
+        type: DataTypes.STRING,
+        allowNull: true,
+        defaultValue: null
+    },
+    numeroGuia: {
+        type: DataTypes.STRING,
+        allowNull: true,
+        defaultValue: null
+    },
+    numeroOrdenVenta: {
+        type: DataTypes.STRING,
+        allowNull: true,
+        defaultValue: null
+    },
+    factura: {
+        type: DataTypes.STRING,
+        allowNull: true,
+        defaultValue: null
     }
   },
   {

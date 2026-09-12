@@ -6,19 +6,19 @@ const storage = new CloudinaryStorage({
   cloudinary,
   params: async (req, file) => {
     if (file.mimetype === "application/pdf") {
-      // Subir PDF como imagen (JPG, solo la primera página)
       return {
         folder: "uploads",
-        resource_type: "image",
-        format: "jpg", // convierte la primera página a jpg
-        transformation: [{ page: 1 }], // solo la primera página
+        resource_type: "raw",
+        format: "pdf",
+        use_filename: true,
+        unique_filename: true,
       };
     }
-    // Para imágenes normales
+
     return {
       folder: "uploads",
       resource_type: "image",
-      format: file.mimetype.split("/")[1], // jpg, png, etc.
+      format: file.mimetype.split("/")[1],
     };
   },
 });
@@ -28,17 +28,22 @@ const fileFilter = (req, file, cb) => {
     "image/jpeg",
     "image/jpg",
     "image/png",
-    "application/pdf"
+    "application/pdf",
   ];
+
   if (allowedMimeTypes.includes(file.mimetype)) {
     cb(null, true);
   } else {
-    cb(new Error("Tipo de archivo no permitido. Solo JPEG, JPG, PNG y PDF son aceptados."));
+    cb(
+      new Error(
+        "Tipo de archivo no permitido. Solo JPEG, JPG, PNG y PDF son aceptados.",
+      ),
+    );
   }
 };
 
 export const uploadConfig = multer({
   storage,
   fileFilter,
-  limits: { fileSize: 1024 * 1024 * 5 }
+  limits: { fileSize: 1024 * 1024 * 5 },
 });
