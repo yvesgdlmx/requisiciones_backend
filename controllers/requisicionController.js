@@ -459,7 +459,6 @@ export const actualizarRequisicionAdmin = async (req, res) => {
         } else if (tipoCompra !== undefined) {
             requisicion.cotizacion = null;
             requisicion.numeroGuia = null;
-            requisicion.numeroOrdenCompra = null;
             requisicion.numeroOrdenVenta = null;
             requisicion.factura = null;
         }
