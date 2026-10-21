@@ -97,6 +97,16 @@ const Requisicion = db.define(
       allowNull: true,
       defaultValue: null
     },
+    recurrenciaCompra: {
+      type: DataTypes.ENUM("recurrente", "no_recurrente"),
+      allowNull: true,
+      defaultValue: null
+    },
+    cotizacionesArchivos: {
+      type: DataTypes.JSON,
+      allowNull: true,
+      defaultValue: []
+    },
     monto: {
       type: DataTypes.STRING,
       allowNull: true,

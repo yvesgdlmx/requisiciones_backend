@@ -1,7 +1,8 @@
-import { Requisicion, Usuario, Articulo, Categoria, Excedente, HistorialGasto } from "../models/Index.js";
+import { Requisicion, Usuario, Articulo, Categoria, Excedente, HistorialGasto, HistorialStatusRequisicion } from "../models/Index.js";
 import NotificacionService from "../services/NotificacionService.js";
 import HistorialGastoService from "../services/HistorialGastoService.js";
 import HistorialStatusService from "../services/HistorialStatusService.js";
+import { canonicalizarStatusFlujo, normalizarStatusFlujo, validarTransicionStatus } from "../utils/flujoStatusRequisicion.js";
 import fs, { stat } from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -51,6 +52,33 @@ const serializeUploadedFile = (file) => ({
     original_name: file.originalname
 });
 
+const getUploadedFiles = (req, fieldName = "archivo") => {
+    if (!req.files) return [];
+
+    if (Array.isArray(req.files)) {
+        return fieldName === "archivo" ? req.files : [];
+    }
+
+    return req.files[fieldName] || [];
+};
+
+const parseJsonArray = (value) => {
+    if (!value) return [];
+    if (Array.isArray(value)) return value;
+
+    try {
+        const parsed = JSON.parse(value);
+        return Array.isArray(parsed) ? parsed : [];
+    } catch {
+        return [];
+    }
+};
+
+const fileMatches = (file, target) =>
+    (typeof target === "string" && target === file) ||
+    (typeof target === "object" && typeof file === "object" && target.public_id === file.public_id) ||
+    (typeof target === "object" && typeof file === "string" && target.url === file);
+
 const deleteCloudinaryFile = async (file) => {
     if (typeof file !== "object" || !file.public_id) return;
 
@@ -75,6 +103,90 @@ const deleteCloudinaryFile = async (file) => {
             console.error("Error eliminando archivo de Cloudinary:", publicId, err);
         }
     }
+};
+
+const normalizarStatusReporte = (status) => {
+    if (typeof status !== "string") return "";
+
+    return status
+        .toLowerCase()
+        .replaceAll("Ã­", "í")
+        .replaceAll("ÃƒÂ­", "í")
+        .replaceAll("ÃƒÆ’Ã‚Â­", "í")
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "");
+};
+
+const formatearDuracionReporte = (milisegundos) => {
+    if (milisegundos === null || milisegundos === undefined || milisegundos < 0) {
+        return null;
+    }
+
+    const minutosTotales = Math.floor(milisegundos / 60000);
+    const dias = Math.floor(minutosTotales / 1440);
+    const horas = Math.floor((minutosTotales % 1440) / 60);
+    const minutos = minutosTotales % 60;
+
+    return `${dias}d ${horas}h ${minutos}m`;
+};
+
+const crearDuracionReporte = (inicio, fin) => {
+    if (!inicio || !fin) {
+        return {
+            completado: false,
+            milisegundos: null,
+            texto: "Pendiente",
+            inicio: inicio || null,
+            fin: fin || null
+        };
+    }
+
+    const inicioFecha = new Date(inicio);
+    const finFecha = new Date(fin);
+    const milisegundos = finFecha - inicioFecha;
+
+    if (Number.isNaN(milisegundos) || milisegundos < 0) {
+        return {
+            completado: false,
+            milisegundos: null,
+            texto: "Sin dato",
+            inicio,
+            fin
+        };
+    }
+
+    return {
+        completado: true,
+        milisegundos,
+        texto: formatearDuracionReporte(milisegundos),
+        inicio,
+        fin
+    };
+};
+
+const obtenerFechaPrimerStatus = (historial, statusObjetivo, fechaMinima = null) => {
+    const statusNormalizado = normalizarStatusReporte(statusObjetivo);
+    const minima = fechaMinima ? new Date(fechaMinima) : null;
+
+    const movimiento = historial.find((item) => {
+        const fechaCambio = new Date(item.fechaCambio);
+
+        return (
+            normalizarStatusReporte(item.statusNuevo) === statusNormalizado &&
+            (!minima || fechaCambio >= minima)
+        );
+    });
+
+    return movimiento?.fechaCambio || null;
+};
+
+const calcularPromedioReporte = (requisiciones, clave) => {
+    const completados = requisiciones.filter((item) => item.tiempos[clave]?.completado).length;
+
+    return {
+        completados,
+        pendientes: requisiciones.length - completados
+    };
 };
 
 export const crearRequisicion = async (req, res) => {
@@ -172,6 +284,119 @@ export const obtenerRequisiciones = async (req, res) => {
     } catch (error) {
         console.error("Error al obtener requisiciones:", error);
         return res.status(500).json({ msg: "Error al obtener requisiciones" });
+    }
+};
+
+export const obtenerReporteTiemposRequisiciones = async (req, res) => {
+    try {
+        const requisiciones = await Requisicion.findAll({
+            order: [["fechaHora", "DESC"]],
+            attributes: ["id", "folio", "fechaHora", "status", "area", "objetivo"],
+            include: [
+                {
+                    model: Usuario,
+                    as: "usuario",
+                    attributes: ["id", "nombre", "apellido", "email"]
+                },
+                {
+                    model: HistorialStatusRequisicion,
+                    as: "historialStatus",
+                    attributes: ["id", "statusAnterior", "statusNuevo", "fechaCambio"],
+                    required: false
+                }
+            ]
+        });
+
+        const detalle = requisiciones.map((requisicion) => {
+            const reqJson = requisicion.toJSON();
+            const historial = [...(reqJson.historialStatus || [])].sort(
+                (a, b) => new Date(a.fechaCambio) - new Date(b.fechaCambio)
+            );
+
+            const fechaCreada = reqJson.fechaHora;
+            const fechaAprobada = obtenerFechaPrimerStatus(historial, "aprobada");
+            const fechaRechazada = obtenerFechaPrimerStatus(historial, "rechazada");
+            const fechaEsperandoAutorizacion = obtenerFechaPrimerStatus(historial, "esperando autorizacion");
+            const fechaAutorizada = obtenerFechaPrimerStatus(
+                historial,
+                "autorizada",
+                fechaEsperandoAutorizacion
+            );
+            const fechaProveedorPreparandoEnvio = obtenerFechaPrimerStatus(
+                historial,
+                "proveedor preparando envio",
+                fechaAprobada
+            );
+            const fechaConcluida = obtenerFechaPrimerStatus(historial, "concluida");
+
+            return {
+                id: reqJson.id,
+                folio: reqJson.folio,
+                fechaCreada,
+                statusActual: reqJson.status,
+                area: reqJson.area,
+                objetivo: reqJson.objetivo,
+                solicitante: reqJson.usuario
+                    ? `${reqJson.usuario.nombre || ""} ${reqJson.usuario.apellido || ""}`.trim()
+                    : "Sin solicitante",
+                tiempos: {
+                    creadaAprobada: crearDuracionReporte(fechaCreada, fechaAprobada),
+                    creadaRechazada: crearDuracionReporte(fechaCreada, fechaRechazada),
+                    esperandoAutorizacionAutorizada: crearDuracionReporte(
+                        fechaEsperandoAutorizacion,
+                        fechaAutorizada
+                    ),
+                    aprobadaProveedorPreparandoEnvio: crearDuracionReporte(
+                        fechaAprobada,
+                        fechaProveedorPreparandoEnvio
+                    ),
+                    creadaConcluida: crearDuracionReporte(fechaCreada, fechaConcluida)
+                }
+            };
+        });
+
+        const metricas = [
+            {
+                clave: "creadaAprobada",
+                titulo: "Creada a aprobada",
+                descripcion: "Desde la creacion hasta aprobacion"
+            },
+            {
+                clave: "creadaRechazada",
+                titulo: "Creada a rechazada",
+                descripcion: "Desde la creacion hasta rechazo"
+            },
+            {
+                clave: "esperandoAutorizacionAutorizada",
+                titulo: "Esperando autorizacion a autorizada",
+                descripcion: "Tiempo en revision de autorizacion"
+            },
+            {
+                clave: "aprobadaProveedorPreparandoEnvio",
+                titulo: "Aprobada a proveedor preparando envio",
+                descripcion: "Tiempo hasta preparacion del proveedor"
+            },
+            {
+                clave: "creadaConcluida",
+                titulo: "Creada a concluida",
+                descripcion: "Tiempo total hasta cierre"
+            }
+        ].map((metrica) => ({
+            ...metrica,
+            ...calcularPromedioReporte(detalle, metrica.clave)
+        }));
+
+        return res.json({
+            msg: "Reporte de tiempos obtenido",
+            totalRequisiciones: detalle.length,
+            metricas,
+            requisiciones: detalle
+        });
+    } catch (error) {
+        console.error("Error al obtener reporte de tiempos:", error);
+        return res.status(500).json({
+            msg: "Error al obtener el reporte de tiempos"
+        });
     }
 };
 
@@ -298,6 +523,12 @@ export const actualizarRequisicion = async (req, res) => {
         }
 
         const { objetivo, prioridad, status, articulos, links } = req.body;
+        // Los cambios de proceso deben pasar por los endpoints administrativos.
+        const errorStatus = validarTransicionStatus(requisicion.status, status, "solicitante");
+        if (errorStatus) {
+            await t.rollback();
+            return res.status(400).json({ msg: errorStatus });
+        }
 
         // Archivos existentes (pueden ser objetos o strings)
         let archivosExistentes = [];
@@ -401,6 +632,7 @@ export const actualizarRequisicion = async (req, res) => {
 
 
 export const actualizarRequisicionAdmin = async (req, res) => {
+    let transaccion;
     try {
         const usuario = req.usuario;
         const { id } = req.params;
@@ -411,22 +643,32 @@ export const actualizarRequisicionAdmin = async (req, res) => {
         if (!(usuario.rol === "admin" || usuario.rol === "superadmin")) {
             return res.status(403).json({ msg: "Acción no permitida. Solo admin o superAdmin pueden usar este endpoint." });
         }
-        let requisicion = await Requisicion.findByPk(id);
+        transaccion = await db.transaction();
+        let requisicion = await Requisicion.findByPk(id, {
+            transaction: transaccion, lock: transaccion.LOCK.UPDATE
+        });
         if (!requisicion) {
             return res.status(404).json({ msg: "Requisición no encontrada" });
         }
-        const { status, prioridad, comentario, numeroOrdenCompra, cotizacion, numeroGuia, numeroOrdenVenta, factura, proveedor, tipoCompra, monto, eta, archivosExistentes, categoriaGasto, categoriaId } = req.body;
+        const { status: statusSolicitado, prioridad, comentario, numeroOrdenCompra, cotizacion, numeroGuia, numeroOrdenVenta, factura, proveedor, tipoCompra, recurrenciaCompra, monto, eta, archivosExistentes, cotizacionesExistentes, categoriaGasto, categoriaId } = req.body;
+        const status = canonicalizarStatusFlujo(statusSolicitado);
 
         // Guardar status anterior para notificaciones
         const statusAnterior = requisicion.status;
         const comentarioAnterior = requisicion.comentario;
         const etaAnterior = requisicion.eta ? new Date(requisicion.eta).toISOString() : null;
 
-        // Si se intenta actualizar el status y el rol es superadmin, se rechaza la acción
-        if (status !== undefined && usuario.rol === "superadmin") {
+        const cambiaStatus = status !== undefined &&
+            normalizarStatusFlujo(status) !== normalizarStatusFlujo(statusAnterior);
+        // La decisión del superadmin se realiza en el endpoint de autorización.
+        if (cambiaStatus && usuario.rol === "superadmin") {
             return res.status(403).json({ msg: "No tienes los permisos para actualizar una requisición" });
         }
-        if (status !== undefined) {
+        const errorStatus = validarTransicionStatus(statusAnterior, status, "admin");
+        if (errorStatus) {
+            return res.status(400).json({ msg: errorStatus });
+        }
+        if (cambiaStatus) {
             requisicion.status = status;
             requisicion.comprador = `${usuario.nombre} ${usuario.apellido}`;
             requisicion.fechaCambioStatus = new Date();
@@ -471,6 +713,13 @@ export const actualizarRequisicionAdmin = async (req, res) => {
                 requisicion.tipoCompra = null;
             } else {
                 requisicion.tipoCompra = tipoCompra;
+            }
+        }
+        if (recurrenciaCompra !== undefined) {
+            if (recurrenciaCompra === "" || recurrenciaCompra === "null") {
+                requisicion.recurrenciaCompra = null;
+            } else {
+                requisicion.recurrenciaCompra = recurrenciaCompra;
             }
         }
 
@@ -604,26 +853,28 @@ export const actualizarRequisicionAdmin = async (req, res) => {
             }
         }
 
-        let archivosFinales = [];
+        let archivosFinales = parseJsonArray(archivosExistentes);
+        let cotizacionesFinales = parseJsonArray(cotizacionesExistentes);
+        const documentosSubidos = getUploadedFiles(req, "archivo");
+        const cotizacionesSubidas = getUploadedFiles(req, "cotizacionesArchivo");
 
-        if (archivosExistentes) {
-            try {
-                const archivosParseados = JSON.parse(archivosExistentes);
-                archivosFinales = Array.isArray(archivosParseados) ? archivosParseados : [];
-            } catch (e) {
-                archivosFinales = [];
+        if (
+            requisicion.recurrenciaCompra === "no_recurrente" &&
+            cotizacionesFinales.length + cotizacionesSubidas.length < 3
+        ) {
+            for (const file of [...documentosSubidos, ...cotizacionesSubidas]) {
+                await deleteCloudinaryFile(serializeUploadedFile(file));
             }
+
+            return res.status(400).json({
+                msg: "Las compras no recurrentes requieren al menos 3 archivos de cotizacion."
+            });
         }
 
         // Identificar archivos a eliminar de Cloudinary
         const archivosOriginales = requisicion.archivos || [];
         const archivosAEliminar = archivosOriginales.filter(
-            original => !archivosFinales.some(
-                conservado =>
-                    (typeof conservado === "string" && conservado === original) ||
-                    (typeof conservado === "object" && typeof original === "object" && conservado.public_id === original.public_id) ||
-                    (typeof conservado === "object" && typeof original === "string" && conservado.url === original)
-            )
+            original => !archivosFinales.some(conservado => fileMatches(original, conservado))
         );
 
         // Eliminar archivos de Cloudinary
@@ -631,20 +882,44 @@ export const actualizarRequisicionAdmin = async (req, res) => {
             await deleteCloudinaryFile(file);
         }
 
+        const cotizacionesOriginales = requisicion.cotizacionesArchivos || [];
+        const cotizacionesAEliminar = cotizacionesOriginales.filter(
+            original => !cotizacionesFinales.some(conservada => fileMatches(original, conservada))
+        );
+
+        for (const file of cotizacionesAEliminar) {
+            await deleteCloudinaryFile(file);
+        }
+
         // Agregar nuevos archivos subidos
-        if (req.files && req.files.length > 0) {
-            const nuevosArchivos = req.files.map(serializeUploadedFile);
+        if (documentosSubidos.length > 0) {
+            const nuevosArchivos = documentosSubidos.map(serializeUploadedFile);
             archivosFinales = [...archivosFinales, ...nuevosArchivos];
+        }
+
+        if (cotizacionesSubidas.length > 0) {
+            const nuevasCotizaciones = cotizacionesSubidas.map(serializeUploadedFile);
+            cotizacionesFinales = [...cotizacionesFinales, ...nuevasCotizaciones];
         }
 
         // Actualizar la requisición con los archivos finales
         requisicion.archivos = archivosFinales;
 
-        await requisicion.save();
+        requisicion.cotizacionesArchivos = cotizacionesFinales;
+
+        await requisicion.save({ transaction: transaccion });
+
+        // El avance y su historial se guardan juntos antes de emitir notificaciones.
+        if (cambiaStatus) {
+            await HistorialStatusService.registrarCambioStatus({
+                requisicionId: requisicion.id, statusAnterior, statusNuevo: status,
+                usuario, comentario, transaction: transaccion
+            });
+        }
+        await transaccion.commit();
 
         // Generar notificaciones si hubo cambios relevantes
-        if (status !== undefined && status !== statusAnterior) {
-            await HistorialStatusService.registrarCambioStatus({ requisicionId: requisicion.id, statusAnterior, statusNuevo: status, usuario, comentario })
+        if (cambiaStatus) {
             await NotificacionService.crearNotificacionCambioStatus(requisicion.id, statusAnterior, status, `${usuario.nombre} ${usuario.apellido}`);
         }
         // Notificación por comentario agregado
@@ -676,10 +951,13 @@ export const actualizarRequisicionAdmin = async (req, res) => {
     } catch (error) {
         console.error("Error al actualizar la requisición (admin):", error);
         return res.status(500).json({ msg: "Error al actualizar la requisición" });
+    } finally {
+        if (transaccion && !transaccion.finished) await transaccion.rollback();
     }
 };
 
 export const actualizarRequisicionSuperAdmin = async (req, res) => {
+    let transaccion;
     try {
         const usuario = req.usuario;
         const { id } = req.params;
@@ -692,18 +970,28 @@ export const actualizarRequisicionSuperAdmin = async (req, res) => {
             return res.status(403).json({ msg: "Acción no permitida. Solo superadmin puede usar este endpoint." });
         }
         // Buscar la requisición
-        let requisicion = await Requisicion.findByPk(id);
+        transaccion = await db.transaction();
+        let requisicion = await Requisicion.findByPk(id, {
+            transaction: transaccion, lock: transaccion.LOCK.UPDATE
+        });
         if (!requisicion) {
             return res.status(404).json({ msg: "Requisición no encontrada" });
         }
 
         // Actualizar status y comentario del autorizador
-        const { status, comentarioAutorizador } = req.body;
+        const { status: statusSolicitado, comentarioAutorizador } = req.body;
+        const status = canonicalizarStatusFlujo(statusSolicitado);
 
         const comentarioAutorizadorAnterior = requisicion.comentarioAutorizador;
         const statusAnterior = requisicion.status;
 
-        if (status !== undefined) {
+        const errorStatus = validarTransicionStatus(statusAnterior, status, "superadmin");
+        if (errorStatus) {
+            return res.status(400).json({ msg: errorStatus });
+        }
+        const cambiaStatus = status !== undefined &&
+            normalizarStatusFlujo(status) !== normalizarStatusFlujo(statusAnterior);
+        if (cambiaStatus) {
             requisicion.status = status;
             requisicion.fechaCambioStatus = new Date();
         }
@@ -713,11 +1001,17 @@ export const actualizarRequisicionSuperAdmin = async (req, res) => {
             requisicion.comentarioAutorizador = comentarioAutorizador;
         }
 
-        await requisicion.save();
+        await requisicion.save({ transaction: transaccion });
+        if (cambiaStatus) {
+            await HistorialStatusService.registrarCambioStatus({
+                requisicionId: requisicion.id, statusAnterior, statusNuevo: status,
+                usuario, comentario: comentarioAutorizador, transaction: transaccion
+            });
+        }
+        await transaccion.commit();
 
         //Gnerar notificaciones si hubo cambios relevantes
-        if (status !== undefined && status !== statusAnterior) {
-            await HistorialStatusService.registrarCambioStatus({ requisicionId: requisicion.id, statusAnterior, statusNuevo: status, usuario, comentario: comentarioAutorizador })
+        if (cambiaStatus) {
             await NotificacionService.crearNotificacionCambioStatus(requisicion.id, statusAnterior, status, "Autorizador");
         }
 
@@ -739,6 +1033,8 @@ export const actualizarRequisicionSuperAdmin = async (req, res) => {
     } catch (error) {
         console.error("Error al actualizar la requisición (superadmin):", error);
         return res.status(500).json({ msg: "Error al actualizar la requisición" });
+    } finally {
+        if (transaccion && !transaccion.finished) await transaccion.rollback();
     }
 };
 

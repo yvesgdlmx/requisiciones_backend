@@ -6,7 +6,8 @@ class HistorialStatusService {
         statusAnterior,
         statusNuevo,
         usuario,
-        comentario = null
+        comentario = null,
+        transaction
     }) {
         if (!requisicionId || !statusNuevo) return null;
 
@@ -23,7 +24,7 @@ class HistorialStatusService {
             usuarioRol: usuario?.rol || null,
             comentario,
             fechaCambio: new Date()
-        });
+        }, { transaction });
     }
 }
 
