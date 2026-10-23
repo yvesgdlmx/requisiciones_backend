@@ -314,7 +314,7 @@ export const obtenerReporteTiemposRequisiciones = async (req, res) => {
             );
 
             const fechaCreada = reqJson.fechaHora;
-            const fechaAprobada = obtenerFechaPrimerStatus(historial, "aprobada");
+            const fechaCotizando = obtenerFechaPrimerStatus(historial, "cotizando");
             const fechaRechazada = obtenerFechaPrimerStatus(historial, "rechazada");
             const fechaEsperandoAutorizacion = obtenerFechaPrimerStatus(historial, "esperando autorizacion");
             const fechaAutorizada = obtenerFechaPrimerStatus(
@@ -325,7 +325,7 @@ export const obtenerReporteTiemposRequisiciones = async (req, res) => {
             const fechaProveedorPreparandoEnvio = obtenerFechaPrimerStatus(
                 historial,
                 "proveedor preparando envio",
-                fechaAprobada
+                fechaCotizando
             );
             const fechaConcluida = obtenerFechaPrimerStatus(historial, "concluida");
 
@@ -340,14 +340,14 @@ export const obtenerReporteTiemposRequisiciones = async (req, res) => {
                     ? `${reqJson.usuario.nombre || ""} ${reqJson.usuario.apellido || ""}`.trim()
                     : "Sin solicitante",
                 tiempos: {
-                    creadaAprobada: crearDuracionReporte(fechaCreada, fechaAprobada),
+                    creadaCotizando: crearDuracionReporte(fechaCreada, fechaCotizando),
                     creadaRechazada: crearDuracionReporte(fechaCreada, fechaRechazada),
                     esperandoAutorizacionAutorizada: crearDuracionReporte(
                         fechaEsperandoAutorizacion,
                         fechaAutorizada
                     ),
-                    aprobadaProveedorPreparandoEnvio: crearDuracionReporte(
-                        fechaAprobada,
+                    cotizandoProveedorPreparandoEnvio: crearDuracionReporte(
+                        fechaCotizando,
                         fechaProveedorPreparandoEnvio
                     ),
                     creadaConcluida: crearDuracionReporte(fechaCreada, fechaConcluida)
@@ -357,9 +357,9 @@ export const obtenerReporteTiemposRequisiciones = async (req, res) => {
 
         const metricas = [
             {
-                clave: "creadaAprobada",
-                titulo: "Creada a aprobada",
-                descripcion: "Desde la creacion hasta aprobacion"
+                clave: "creadaCotizando",
+                titulo: "Creada a cotizando",
+                descripcion: "Desde la creacion hasta el inicio de cotizacion"
             },
             {
                 clave: "creadaRechazada",
@@ -372,8 +372,8 @@ export const obtenerReporteTiemposRequisiciones = async (req, res) => {
                 descripcion: "Tiempo en revision de autorizacion"
             },
             {
-                clave: "aprobadaProveedorPreparandoEnvio",
-                titulo: "Aprobada a proveedor preparando envio",
+                clave: "cotizandoProveedorPreparandoEnvio",
+                titulo: "Cotizando a proveedor preparando envio",
                 descripcion: "Tiempo hasta preparacion del proveedor"
             },
             {
@@ -767,8 +767,8 @@ export const actualizarRequisicionAdmin = async (req, res) => {
             }
 
             // NUEVA LÓGICA: Validar presupuesto y registrar excedentes
-            // ✅ SOLO si el status es "aprobada" o "autorizada"
-            if (montoCantidad !== null && catIdAValidar && (status === "aprobada" || status === "autorizada")) {
+            // Validar presupuesto al iniciar cotizacion o autorizar.
+            if (montoCantidad !== null && catIdAValidar && (status === "cotizando" || status === "autorizada")) {
                 const categoria = await Categoria.findByPk(catIdAValidar);
 
                 if (categoria) {

@@ -3,7 +3,7 @@ import { Op } from "sequelize";
 
 class HistorialGastoService {
   static isStatusValido(status) {
-    return status === "aprobada" || status === "autorizada";
+    return status === "cotizando" || status === "autorizada";
   }
 
   static async crearOActualizarHistorial(requisicion, usuarioNombre = null) {
@@ -78,7 +78,7 @@ class HistorialGastoService {
       const requisiciones = await Requisicion.findAll({
         where: {
           categoriaId: requisicion.categoriaId,
-          status: { [Op.in]: ["aprobada", "autorizada"] }
+          status: { [Op.in]: ["cotizando", "autorizada"] }
         },
         include: [{
           model: HistorialGasto,

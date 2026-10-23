@@ -1,4 +1,4 @@
-import { Categoria, Requisicion } from "../models/Index.js";
+import { Categoria, Excedente, Requisicion } from "../models/Index.js";
 import PeriodoService from "../services/PeriodoService.js";
 import { Op } from "sequelize";
 
@@ -375,8 +375,15 @@ export const obtenerPresupuestoDisponible = async (req, res) => {
     const requisiciones = await Requisicion.findAll({
       where: { 
         categoriaId: id, 
-        // CAMBIO: solo contar aprobadas/autorizadas
-        status: { [Op.in]: ["aprobada", "autorizada"] }
+        // Contar las requisiciones de las ramas de cotizacion y autorizacion.
+        status: { [Op.in]: [
+          "cotizando",
+          "autorizada",
+          "liberacion aduanal",
+          "proceso de entrega",
+          "entregada parcial",
+          "concluida"
+        ] }
       }
     });
 
@@ -423,3 +430,22 @@ export const obtenerPresupuestoDisponible = async (req, res) => {
     return res.status(500).json({ msg: "Error al calcular presupuesto" });
   }
 };
+
+export const obtenerExcedentePorPeriodo = async (req, res) => {
+  const { categoriaId } = req.params;
+  const { inicio, fin } = req.query;
+
+  try {
+    const excedente = await Excedente.findOne({
+      where: {
+        categoriaId,
+        fecha_inicio: { [Op.eq]: new Date(inicio)},
+        fecha_fin: { [Op.eq]: new Date(fin)}
+      }
+    });
+
+    return res.json({ excedente})
+  } catch (error) {
+    return res.status(500).json({ msg: "Error al obtener el excedente"})
+  }
+}

@@ -61,7 +61,6 @@ const Requisicion = db.define(
       type: DataTypes.ENUM(
         "creada",
         "cotizando",
-        "aprobada",
         "esperando autorizacion",
         "autorizada",
         "proceso de pago",

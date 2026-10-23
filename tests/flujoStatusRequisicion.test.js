@@ -4,8 +4,9 @@ import * as flujo from "../utils/flujoStatusRequisicion.js";
 import * as flujoUI from "../../frontend/src/helpers/flujoStatusRequisicion.js";
 
 const recorridos = [
-  ["creada", "aprobada", "cotizando", "proveedor preparando envío", "proceso de entrega", "concluida"],
-  ["creada", "aprobada", "cotizando", "proveedor preparando envío", "liberacion aduanal", "proceso de entrega", "entregada parcial"],
+  ["creada", "cotizando", "proveedor preparando envío", "proceso de entrega", "concluida"],
+  ["creada", "cotizando", "proveedor preparando envío", "liberacion aduanal", "proceso de entrega", "entregada parcial", "concluida"],
+  ["creada", "esperando autorizacion", "autorizada", "proveedor preparando envío", "proceso de entrega", "concluida"],
   ["creada", "esperando autorizacion", "autorizada", "proceso de pago", "proveedor preparando envío", "proceso de entrega", "entregada parcial"],
   ["creada", "esperando autorizacion", "rechazada"],
   ["creada", "cancelada"],
@@ -29,7 +30,8 @@ test("el servidor y la interfaz respetan todos los recorridos y bloquean los dem
         }
       }
     }
-    for (const invalido of [null, "", {}, [], "inventado"]) {
+    assert.equal(Object.hasOwn(modulo.TRANSICIONES_STATUS, "aprobada"), false);
+    for (const invalido of [null, "", {}, [], "inventado", "aprobada"]) {
       assert.ok(modulo.validarTransicionStatus("creada", invalido, "admin"));
     }
     assert.equal(modulo.validarTransicionStatus("creada", undefined, "admin"), null);
@@ -44,8 +46,12 @@ let persistido;
 let historial;
 let transaccion;
 let fallarHistorial = false;
+let requisicionesReporte = [];
 const clonar = (objeto) => structuredClone(objeto);
 const modeloRequisicion = {
+  async findAll() {
+    return requisicionesReporte.map((requisicion) => ({ toJSON: () => clonar(requisicion) }));
+  },
   async findByPk(id, opciones = {}) {
     if (!persistido) return null;
     if (opciones.lock) assert.equal(opciones.transaction, transaccion);
@@ -95,6 +101,34 @@ mock.module(new URL("../services/HistorialGastoService.js", import.meta.url).hre
 mock.module(new URL("../config/cloudinary.js", import.meta.url).href, { defaultExport: {} });
 const controladores = await import("../controllers/requisicionController.js");
 
+test("el reporte mide cotizacion y conserva pendientes cuando falta su fecha historica", async () => {
+  requisicionesReporte = [{
+    id: 1, folio: "C26-00001", status: "concluida", fechaHora: "2026-10-01T00:00:00Z",
+    historialStatus: [
+      { statusNuevo: "cotizando", fechaCambio: "2026-10-02T00:00:00Z" },
+      { statusNuevo: "proveedor preparando envío", fechaCambio: "2026-10-03T00:00:00Z" },
+      { statusNuevo: "concluida", fechaCambio: "2026-10-04T00:00:00Z" },
+    ],
+  }, {
+    id: 2, folio: "C26-00002", status: "cotizando", fechaHora: "2026-10-01T00:00:00Z",
+    historialStatus: [{ statusNuevo: "aprobada", fechaCambio: "2026-10-02T00:00:00Z" }],
+  }];
+  const respuesta = {
+    status(codigo) { assert.fail(`Error de reporte: ${codigo}`); },
+    json(datos) { this.datos = datos; },
+  };
+  await controladores.obtenerReporteTiemposRequisiciones({}, respuesta);
+  assert.deepEqual(respuesta.datos.metricas.map((metrica) => metrica.clave), [
+    "creadaCotizando", "creadaRechazada", "esperandoAutorizacionAutorizada",
+    "cotizandoProveedorPreparandoEnvio", "creadaConcluida",
+  ]);
+  const [completa, migrada] = respuesta.datos.requisiciones;
+  assert.equal(completa.tiempos.creadaCotizando.milisegundos, 86400000);
+  assert.equal(completa.tiempos.cotizandoProveedorPreparandoEnvio.milisegundos, 86400000);
+  assert.equal(migrada.tiempos.creadaCotizando.completado, false);
+  assert.equal(migrada.tiempos.creadaCotizando.fin, null);
+});
+
 const reiniciar = (status) => {
   persistido = {
     id: 1, solicitante: 1, status, archivos: [], cotizacionesArchivos: [],
@@ -124,7 +158,8 @@ test("los endpoints rechazan saltos, retrocesos y decisiones de autorización de
     ["creada", "autorizada", "actualizarRequisicionSuperAdmin", "superadmin"],
     ["concluida", "proceso de entrega", "actualizarRequisicionAdmin", "admin"],
     ["rechazada", "esperando autorizacion", "actualizarRequisicionSuperAdmin", "superadmin"],
-    ["entregada parcial", "concluida", "actualizarRequisicionAdmin", "admin"],
+    ["entregada parcial", "proceso de entrega", "actualizarRequisicionAdmin", "admin"],
+    ["creada", "aprobada", "actualizarRequisicionAdmin", "admin"],
     ["creada", "aprobada", "actualizarRequisicion", "admin"],
   ]) {
     reiniciar(actual);
@@ -170,7 +205,7 @@ test("editar datos sin avanzar conserva la fecha del status y no duplica el hist
 
 test("si falla el historial se revierte el avance de status", async () => {
   for (const [actual, siguiente, rol, endpoint] of [
-    ["creada", "aprobada", "admin", "actualizarRequisicionAdmin"],
+    ["creada", "cotizando", "admin", "actualizarRequisicionAdmin"],
     ["esperando autorizacion", "autorizada", "superadmin", "actualizarRequisicionSuperAdmin"],
   ]) {
     reiniciar(actual);
